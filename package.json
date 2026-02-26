@@ -1,22 +1,18 @@
 {
   "name": "portal",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Spatial operating environment for project context management",
   "author": "J.A. / Altigad",
   "license": "UNLICENSED",
-  "workspaces": [
-    "packages/*"
-  ],
   "scripts": {
-    "build": "tsc --build",
-    "clean": "rm -rf packages/*/dist",
-    "test": "echo 'No tests yet — coming in v0.2.0'",
-    "dev": "echo 'Run: npm run dev:hub & npm run dev:ui'",
-    "dev:hub": "echo 'Hub not scaffolded yet — see ROADMAP.md v0.2.0'",
-    "dev:ui": "echo 'Renderer not scaffolded yet — see ROADMAP.md v0.2.0'"
+    "dev:ui": "vite",
+    "build:ui": "vite build",
+    "tauri": "tauri"
   },
   "devDependencies": {
-    "typescript": "^5.4.0"
+    "@tauri-apps/cli": "^2.0.0",
+    "typescript": "^5.4.0",
+    "vite": "^6.0.0"
   }
 }
