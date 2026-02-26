@@ -6,12 +6,68 @@
   <title>Portal</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #0A0A0C; overflow: hidden; }
-    canvas { display: block; }
+    body { background: #08080A; overflow: hidden; font-family: system-ui, -apple-system, sans-serif; }
+    canvas { display: block; cursor: grab; }
+
+    /* HUD */
+    #hud-top-left {
+      position: absolute; top: 12px; left: 16px; z-index: 10;
+    }
+    #hud-title {
+      font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.2);
+      letter-spacing: 0.12em; text-transform: uppercase;
+    }
+    #hud-project {
+      font-size: 13px; color: rgba(255,255,255,0.7); margin-top: 4px; display: none;
+    }
+
+    #hud-top-right {
+      position: absolute; top: 12px; right: 16px; z-index: 10;
+      display: flex; gap: 8px; align-items: center;
+    }
+    #hud-lock {
+      font-size: 10px; padding: 4px 10px; border-radius: 4px; cursor: pointer;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: rgba(255,255,255,0.4);
+    }
+    #hud-key-hint {
+      font-size: 9px; padding: 3px 8px; border-radius: 3px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.05);
+      color: rgba(255,255,255,0.25);
+      font-family: monospace;
+    }
+
+    #hud-bottom-left {
+      position: absolute; bottom: 12px; left: 16px; z-index: 10;
+    }
+    #hud-hint {
+      font-size: 9px; color: rgba(255,255,255,0.15);
+      font-family: monospace; line-height: 1.6;
+    }
   </style>
 </head>
 <body>
   <canvas id="canvas"></canvas>
+
+  <!-- HUD: Top Left -->
+  <div id="hud-top-left">
+    <div id="hud-title">Portal</div>
+    <div id="hud-project"></div>
+  </div>
+
+  <!-- HUD: Top Right -->
+  <div id="hud-top-right">
+    <div id="hud-lock">🔒 Locked</div>
+    <div id="hud-key-hint">L = toggle</div>
+  </div>
+
+  <!-- HUD: Bottom Left -->
+  <div id="hud-bottom-left">
+    <div id="hud-hint">scroll = zoom · drag = pan · L = lock/free · dbl-click = enter</div>
+  </div>
+
   <script src="./main.js"></script>
 </body>
 </html>

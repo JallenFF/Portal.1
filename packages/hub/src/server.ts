@@ -205,6 +205,130 @@ app.post('/ingest', async (req) => {
   }
 });
 
+// ── Batch Ingest (folder → project) ─────────────────────────
+
+app.post('/ingest/folder', async (req) => {
+  const { folderPath, projectId } = req.body as {
+    folderPath: string;
+    projectId: string;
+  };
+
+  if (!fs.existsSync(folderPath) || !fs.statSync(folderPath).isDirectory()) {
+    return { error: `Not a valid directory: ${folderPath}` };
+  }
+
+  const results: Array<{ file: string; nodeId: string; vaultId: string; deduplicated: boolean; error?: string }> = [];
+
+  // Walk directory recursively
+  function walkDir(dir: string): string[] {
+    const files: string[] = [];
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...walkDir(fullPath));
+      } else {
+        files.push(fullPath);
+      }
+    }
+    return files;
+  }
+
+  const allFiles = walkDir(folderPath);
+  const sessionId = crypto.randomUUID();
+
+  for (const filePath of allFiles) {
+    try {
+      const result = await ingestFile(filePath, DEFAULT_VAULT_CONFIG, hashIndex);
+
+      if (!result.deduplicated) {
+        const vaultRecord = buildVaultRecord(filePath, result);
+        db.prepare(`
+          INSERT INTO vault_files (id, hash, filename, ext, size_bytes, source_path, mime_type, ingested_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          vaultRecord.id, vaultRecord.hash, vaultRecord.filename, vaultRecord.ext,
+          vaultRecord.size_bytes, vaultRecord.source_path, vaultRecord.mime_type,
+          vaultRecord.ingested_at,
+        );
+
+        const metaRecord = buildMetadataRecord(filePath, result.vaultId);
+        db.prepare(`
+          INSERT INTO file_metadata (vault_id, file_created, file_modified, word_count, dimensions, extra)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(
+          metaRecord.vault_id, metaRecord.file_created, metaRecord.file_modified,
+          metaRecord.word_count, metaRecord.dimensions, metaRecord.extra,
+        );
+
+        hashIndex.set(result.hash, result.vaultId);
+      }
+
+      const nodeId = crypto.randomUUID();
+      const nodeLabel = path.basename(filePath);
+      const ext = path.extname(filePath).slice(1).toLowerCase();
+
+      db.prepare(`
+        INSERT INTO nodes (id, project_id, label, type, vault_id)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(nodeId, projectId, nodeLabel, ext || 'file', result.vaultId);
+
+      db.prepare(`
+        INSERT INTO events (session_id, type, entity_id, payload)
+        VALUES (?, 'file_ingested', ?, ?)
+      `).run(sessionId, nodeId, JSON.stringify({
+        vaultId: result.vaultId,
+        hash: result.hash,
+        deduplicated: result.deduplicated,
+        sourcePath: filePath,
+        projectId,
+      }));
+
+      results.push({ file: nodeLabel, nodeId, vaultId: result.vaultId, deduplicated: result.deduplicated });
+    } catch (err: any) {
+      results.push({ file: path.basename(filePath), nodeId: '', vaultId: '', deduplicated: false, error: err.message });
+      logger.warn('ingest', `Skipped file: ${filePath} — ${err.message}`);
+    }
+  }
+
+  logger.info('ingest', `Folder ingested: ${folderPath}`, {
+    projectId,
+    totalFiles: allFiles.length,
+    ingested: results.filter(r => !r.error).length,
+    errors: results.filter(r => r.error).length,
+  });
+
+  return {
+    folder: folderPath,
+    projectId,
+    total: allFiles.length,
+    results,
+  };
+});
+
+// ── Move Node (reassign to different project) ───────────────
+
+app.put('/nodes/:id/move', async (req) => {
+  const { id } = req.params as { id: string };
+  const { projectId } = req.body as { projectId: string | null };
+
+  const node = db.prepare('SELECT * FROM nodes WHERE id = ?').get(id);
+  if (!node) return { error: 'Node not found' };
+
+  const oldProjectId = (node as any).project_id;
+  db.prepare('UPDATE nodes SET project_id = ?, updated_at = datetime(?) WHERE id = ?')
+    .run(projectId, new Date().toISOString(), id);
+
+  const sessionId = crypto.randomUUID();
+  db.prepare(`
+    INSERT INTO events (session_id, type, entity_id, payload)
+    VALUES (?, 'node_moved', ?, ?)
+  `).run(sessionId, id, JSON.stringify({ from: oldProjectId, to: projectId }));
+
+  logger.info('db', `Node moved: ${id}`, { from: oldProjectId, to: projectId });
+  return { ok: true, nodeId: id, from: oldProjectId, to: projectId };
+});
+
 // ── Events ──────────────────────────────────────────────────
 
 app.get('/events', async (req) => {
