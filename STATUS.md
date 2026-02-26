@@ -1,120 +1,86 @@
-# Portal — Project Status
+# Portal — Status
 
-**Last updated:** 2026-02-26
-**Current version:** v0.1.0-foundation
-**Repo:** https://github.com/JallenFF/Portal.1
-**Next milestone:** v0.2.0-scaffold
+## Current Version: v0.3.0-hub (in progress)
 
----
+### What's done
+- **v0.1.0-foundation** — Architecture, types, graph ops, layouts, physics, triage stub (2,473 lines)
+- **v0.2.0-scaffold** — Tauri desktop shell compiles and runs. Gold test sphere renders.
+- **v0.3.0-hub** — Hub server, vault, system logger, updated SQLite schema (in progress)
 
-## Current State
+### v0.3.0 Files
+| File | Purpose | Status |
+|------|---------|--------|
+| `packages/core/src/persistence.ts` | Updated schema (vault_files, file_metadata, system_events, layout_positions) | ✅ |
+| `packages/vault/src/vault.ts` | File ingest: copy, hash, dedup, cheap metadata extraction | ✅ |
+| `packages/hub/src/logger.ts` | System logger: buffer → SQLite + file logs, diagnostic reports | ✅ |
+| `packages/hub/src/server.ts` | Fastify hub: 11 endpoints, sole DB writer | ✅ |
 
-### What's built
-- Complete TypeScript architecture across 4 packages (core, layouts, physics, triage)
-- 19 files, 2,473 lines
-- Data model: Node, Edge, Project, Event, Snapshot, EntropyMetrics
-- 3 layout strategies: Free (scatter), Orbit (recency rings), Grid (auto-arrange)
-- Physics engine: generic solver + reusable force primitives + deterministic seeding
-- SQLite persistence layer: schema, row ↔ domain conversion, WAL mode
-- Triage interface stub for future AI layer
-- README, CHANGELOG, ROADMAP with versioning
-
-### What's NOT built yet
-- No running app (no Tauri shell)
-- No hub server (no Fastify, no SQLite connection)
-- No renderer (no canvas drawing)
-- No UI (no toolbar, no zoom, no interaction)
-
-### Interactive prototypes (design exploration, not production code)
-Created during initial conversation as React JSX artifacts:
-1. `portal-phase1-mockup.jsx` — List-based teleporter overlay
-2. `portal-desktop-view.jsx` — Folder-based desktop metaphor
-3. `portal-spatial-canvas.jsx` — First physics canvas with zoom
-4. `portal-spatial-v2.jsx` — Full canvas: Free/Orbit modes, rectangular file nodes, version links, recency rings, toolbar
-
-These proved the UX. The real codebase replaces them.
-
----
-
-## Locked Design Decisions
-
-### Architecture
-- Monorepo: `packages/{core, layouts, physics, triage, renderer, hub}`
-- Core imports nothing. Everything else imports core. No circular deps.
-- Layouts are pluggable: implement `LayoutStrategy` interface + register
-- Physics is optional per layout
-- Transient state (vx, vy) separated from persisted state (positions)
-- Hub is sole DB writer. Browser extension POSTs to hub.
-
-### UX / Interaction
-- Two modes inside projects: **Free** (manual scatter) and **Orbit** (recency rings)
-- User toggles explicitly — no auto-switching
-- Toolbar inside focused project: `[Free] [Orbit] [Grid] [Export] [⚙]`
-- Locked mode = camera-only (pan/zoom/click). Free mode = drag to reposition.
-- Press L to toggle locked/free
-- Scroll wheel = zoom. Drag = pan. Zoom into sphere = enter project.
-- Files are colored rectangles with type labels (not dots)
-- Version links = blue dashed lines between file variants
-
-### Physics
-- Top level: full force model (orbit anchor, collision, springs, damping)
-- Inside projects: layout-dependent (orbit uses forces, grid doesn't)
-- Dynamic damping: low friction zoomed out (flick), high friction zoomed in (grounded)
-- Chromatic salience: high activity = vivid, low activity = desaturated
-- Deterministic seeding: hash-based, zero Math.random()
-- Locked mode: anchors win over physics — system never moves things behind user's back
-
-### Data
-- SQLite WAL mode, `~/.portal/portal.db`
-- Session IDs group related events atomically
-- Entropy = `(unassigned × 1.0 + stale × 0.6 + assigned × 0.3) / total`
-- Threshold 0.3 = triage prompt
-- Positions persist separately per layout (switching doesn't destroy other layout)
-
-### Future (designed but not built)
-- Entropy meter: passive, always visible, triggers triage at threshold
-- AI triage: arrow keys (← reject → accept), never autonomous
-- Browser extension: Chrome/Edge → native messaging → hub
-- Launch recipes: deterministic "open these URLs/files/apps" per project
-- Export lens: packet builder with artifact group version selection
-
----
-
-## Version Plan
-
-```
-v0.1.0-foundation  ✅ Architecture & data model
-v0.2.0-scaffold       Running app shell (Tauri + Hub + Renderer)
-v0.3.0-spatial        Full spatial canvas with physics
-v0.4.0-triage         Entropy meter + manual organization
-v0.5.0-ai-triage      Claude-powered suggestions
-v0.6.0-bridge         Browser extension
-v0.7.0-recipes        Launch recipes + workspace restore
-v0.8.0-export         Export & sharing
-v1.0.0                First stable release
+### Dependencies to install
+```bash
+npm install fastify better-sqlite3
+npm install -D @types/better-sqlite3 tsx
 ```
 
----
+### Locked Design Decisions (v0.3.0 additions)
 
-## Tech Stack
+**Vault:**
+- Files are COPIED into `~/.portal/vault/{sha256}.{ext}`
+- Original files are never touched
+- Dedup by SHA-256 hash
+- vault_files record is immutable after creation
+- Classification is a FUTURE separate table — no schema change needed
 
-| Layer | Technology |
-|-------|-----------|
-| Language | TypeScript (strict) |
-| Desktop | Tauri |
-| API | Fastify |
-| Database | SQLite (WAL) |
-| Renderer | HTML5 Canvas |
-| Browser | Chromium extension (Phase 3) |
+**Ingest:**
+- Copy → extract cheap metadata → place at center
+- No NLP, no content parsing, no smart placement at this phase
+- Metadata: file type, size, dates, word count (text files only)
+- Position = center of active sphere. User places it.
+- Future classification writes additional events, doesn't modify ingest
 
----
+**Untangling guarantee:**
+- Ingest is a single event type (`file_ingested`) in the append log
+- Position and classification are NEVER on the file record itself
+- vault_files = immutable. file_metadata = immutable. layout_positions = separate table.
+- Adding smart placement later = new table + new event type. Zero schema migration.
 
-## Conversation History
+**Logging:**
+- system_events table (queryable from app)
+- `~/.portal/logs/portal-{date}.log` (readable from PowerShell)
+- Categories: startup, shutdown, ingest, physics, vault, db, render, error
+- Buffer → flush pattern (off the hot path)
+- GET /diagnostics endpoint returns report + DB stats
 
-| Date | Topic | Key Outcomes |
-|------|-------|-------------|
-| 2026-02-25 | Initial architecture session | Phased build plan, tech stack, snapshot definition, event schema with session_id, launch recipe format, sandbox reset semantics |
-| 2026-02-25 | UX prototyping | 4 interactive prototypes, evolved from list → desktop → spatial canvas → full physics |
-| 2026-02-25 | Physics spec | Full force model from J.A.'s mathematical spec, dual Free/Orbit modes, dynamic damping, chromatic salience |
-| 2026-02-25 | Architecture build | Foundation codebase: core types, graph ops, persistence, 3 layouts, physics solver, triage stub |
-| 2026-02-26 | Versioning + GitHub | README, CHANGELOG, ROADMAP, pushed to GitHub as v0.1.0-foundation |
+**Data mining (future, no code yet):**
+- Event log is the data source
+- Co-access patterns → auto-cluster candidates
+- Context switch frequency → relationship weights
+- Dwell time → orbit placement
+- Dead files → entropy signal
+- Navigation patterns → prefetch optimization
+- All passive. Queryable layer is Phase 2 with AI triage.
+
+### Hub Endpoints
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | /health | Alive check |
+| GET | /projects | List all projects |
+| POST | /projects | Create project |
+| GET | /projects/:id | Project with nodes |
+| POST | /ingest | Ingest file into vault + create node |
+| GET | /events | Query domain events |
+| POST | /events | Write domain event |
+| GET | /positions/:layout | Get positions for layout |
+| PUT | /positions/:layout | Batch update positions |
+| GET | /diagnostics | System report + DB stats |
+| GET | /diagnostics/events | Query system events |
+
+### What's next
+1. Install deps and test hub starts
+2. Wire hub into Tauri (Rust spawns hub on app launch)
+3. Replace test canvas with real renderer consuming hub API
+4. Get file ingest working (drag file onto sphere → vault copy → node appears)
+
+### Git Tags
+- `v0.1.0-foundation` — architecture
+- `v0.2.0-scaffold` — Tauri shell running
+- `v0.3.0-hub` — (tag after hub verified working)
