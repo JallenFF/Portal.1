@@ -20,31 +20,72 @@
     #hud-project {
       font-size: 13px; color: rgba(255,255,255,0.7); margin-top: 4px; display: none;
     }
+    #hud-breadcrumb {
+      display: none; margin-top: 6px; font-size: 12px;
+    }
+    .crumb {
+      color: rgba(255,255,255,0.5); cursor: pointer; padding: 2px 6px;
+      border-radius: 3px; transition: all 0.15s;
+    }
+    .crumb:hover { color: rgba(255,255,255,0.95); background: rgba(255,255,255,0.08); }
+    .sep { color: rgba(255,255,255,0.15); margin: 0 2px; }
 
     #hud-top-right {
       position: absolute; top: 12px; right: 16px; z-index: 10;
       display: flex; gap: 8px; align-items: center;
     }
-    #hud-lock {
+    #hud-lock, #hud-layout {
       font-size: 10px; padding: 4px 10px; border-radius: 4px; cursor: pointer;
       background: rgba(255,255,255,0.06);
       border: 1px solid rgba(255,255,255,0.08);
       color: rgba(255,255,255,0.4);
+      transition: all 0.15s;
     }
-    #hud-key-hint {
-      font-size: 9px; padding: 3px 8px; border-radius: 3px;
-      background: rgba(255,255,255,0.03);
-      border: 1px solid rgba(255,255,255,0.05);
-      color: rgba(255,255,255,0.25);
-      font-family: monospace;
+    #hud-lock:hover, #hud-layout:hover {
+      background: rgba(255,255,255,0.1);
+      color: rgba(255,255,255,0.7);
     }
 
     #hud-bottom-left {
       position: absolute; bottom: 12px; left: 16px; z-index: 10;
     }
     #hud-hint {
-      font-size: 9px; color: rgba(255,255,255,0.15);
-      font-family: monospace; line-height: 1.6;
+      font-size: 10px; color: rgba(255,255,255,0.2);
+      font-family: system-ui, sans-serif; line-height: 1.6;
+    }
+
+    /* Settings Panel */
+    #settings-panel {
+      display: none; position: absolute; top: 50px; right: 16px; z-index: 20;
+      background: rgba(20,20,24,0.95); border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px; padding: 16px; width: 260px;
+      backdrop-filter: blur(12px);
+    }
+    .settings-title {
+      font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.6);
+      margin-bottom: 10px;
+    }
+    #settings-panel label {
+      display: block; font-size: 11px; color: rgba(255,255,255,0.4);
+      margin-bottom: 8px;
+    }
+    #settings-panel input[type="number"] {
+      width: 60px; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 4px; padding: 3px 6px; color: #fff; font-size: 11px;
+      margin-left: 6px;
+    }
+    #settings-panel input[type="checkbox"] {
+      margin-right: 6px;
+    }
+    #settings-panel button {
+      font-size: 11px; padding: 5px 14px; border-radius: 4px; cursor: pointer;
+      margin-right: 6px; margin-top: 8px;
+      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12);
+      color: rgba(255,255,255,0.7); transition: all 0.15s;
+    }
+    #settings-panel button:hover {
+      background: rgba(255,255,255,0.15);
+      color: #fff;
     }
   </style>
 </head>
@@ -55,18 +96,22 @@
   <div id="hud-top-left">
     <div id="hud-title">Portal</div>
     <div id="hud-project"></div>
+    <div id="hud-breadcrumb"></div>
   </div>
 
   <!-- HUD: Top Right -->
   <div id="hud-top-right">
-    <div id="hud-lock">🔒 Locked</div>
-    <div id="hud-key-hint">L = toggle</div>
+    <div id="hud-layout">◎ Orbit</div>
+    <div id="hud-lock">🔒</div>
   </div>
 
   <!-- HUD: Bottom Left -->
   <div id="hud-bottom-left">
-    <div id="hud-hint">scroll = zoom · drag = pan · L = lock/free · dbl-click = enter</div>
+    <div id="hud-hint">scroll = zoom · drag = pan · dbl-click = enter · Ctrl+S = settings</div>
   </div>
+
+  <!-- Settings Panel -->
+  <div id="settings-panel"></div>
 
   <script src="./main.js"></script>
 </body>

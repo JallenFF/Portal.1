@@ -1,27 +1,20 @@
 /**
- * Portal v0.3.0 — SQLite Schema
+ * Portal v0.4.0 — SQLite Schema
  * 
- * Additive over v0.1.0. New tables:
- *   - vault_files: immutable file records (hash, type, size, source)
- *   - file_metadata: cheap extracted metadata per vault file
- *   - system_events: app-level diagnostics (startup, errors, perf)
- *   - layout_positions: per-layout node positions (persisted separately)
- * 
- * Unchanged from v0.1.0:
- *   - nodes, edges, projects, events
- * 
- * Future-safe: classification/tags will be a separate table
- * referencing vault_files.id. No schema change needed.
+ * Changes from v0.3.0:
+ *   - nodes: added parent_id (self-referencing FK for folder hierarchy)
+ *   - nodes: added source_path (original file/folder path for opening)
+ *   - nodes: added is_folder flag
+ *   - nodes: added file_modified (denormalized from file_metadata for orbit placement)
+ *   - settings: key-value store for user preferences (orbit windows, weekend toggle, etc.)
  */
-
-// ── Schema SQL ──────────────────────────────────────────────
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
 -- ═══════════════════════════════════════════════════════════
--- v0.1.0 tables (unchanged)
+-- Core tables
 -- ═══════════════════════════════════════════════════════════
 
 CREATE TABLE IF NOT EXISTS projects (
@@ -30,18 +23,22 @@ CREATE TABLE IF NOT EXISTS projects (
   color       TEXT NOT NULL DEFAULT '#6B7280',
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-  meta        TEXT DEFAULT '{}'  -- extensible JSON blob
+  meta        TEXT DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS nodes (
-  id          TEXT PRIMARY KEY,
-  project_id  TEXT REFERENCES projects(id) ON DELETE SET NULL,
-  label       TEXT NOT NULL,
-  type        TEXT NOT NULL DEFAULT 'file',
-  vault_id    TEXT REFERENCES vault_files(id),
-  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-  meta        TEXT DEFAULT '{}'
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT REFERENCES projects(id) ON DELETE SET NULL,
+  parent_id     TEXT REFERENCES nodes(id) ON DELETE CASCADE,
+  label         TEXT NOT NULL,
+  type          TEXT NOT NULL DEFAULT 'file',
+  is_folder     INTEGER NOT NULL DEFAULT 0,
+  vault_id      TEXT REFERENCES vault_files(id),
+  source_path   TEXT,
+  file_modified TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  meta          TEXT DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS edges (
@@ -67,19 +64,20 @@ CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
 CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_project ON nodes(project_id);
+CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_id);
+CREATE INDEX IF NOT EXISTS idx_nodes_folder ON nodes(is_folder);
 
 -- ═══════════════════════════════════════════════════════════
--- v0.3.0 additions
+-- Vault & Metadata
 -- ═══════════════════════════════════════════════════════════
 
--- Vault: immutable file records. Never modified after ingest.
 CREATE TABLE IF NOT EXISTS vault_files (
-  id          TEXT PRIMARY KEY,          -- uuid
-  hash        TEXT NOT NULL UNIQUE,      -- sha256 of file content
-  filename    TEXT NOT NULL,             -- original filename
-  ext         TEXT NOT NULL,             -- extension (lowercase, no dot)
+  id          TEXT PRIMARY KEY,
+  hash        TEXT NOT NULL UNIQUE,
+  filename    TEXT NOT NULL,
+  ext         TEXT NOT NULL,
   size_bytes  INTEGER NOT NULL,
-  source_path TEXT,                      -- where it came from (informational)
+  source_path TEXT,
   mime_type   TEXT,
   ingested_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -87,21 +85,22 @@ CREATE TABLE IF NOT EXISTS vault_files (
 CREATE INDEX IF NOT EXISTS idx_vault_hash ON vault_files(hash);
 CREATE INDEX IF NOT EXISTS idx_vault_ext ON vault_files(ext);
 
--- Cheap metadata extracted at ingest. One row per vault file.
--- No NLP, no content parsing. Just what the filesystem tells us.
 CREATE TABLE IF NOT EXISTS file_metadata (
   vault_id      TEXT PRIMARY KEY REFERENCES vault_files(id) ON DELETE CASCADE,
-  file_created  TEXT,           -- OS file creation date
-  file_modified TEXT,           -- OS file modified date
-  word_count    INTEGER,        -- null for non-text files
-  dimensions    TEXT,           -- 'WxH' for images, null otherwise
-  extra         TEXT DEFAULT '{}'  -- extensible JSON for future extractors
+  file_created  TEXT,
+  file_modified TEXT,
+  word_count    INTEGER,
+  dimensions    TEXT,
+  extra         TEXT DEFAULT '{}'
 );
 
--- Per-layout positions. Switching layouts doesn't destroy other layouts.
+-- ═══════════════════════════════════════════════════════════
+-- Layout & Positions
+-- ═══════════════════════════════════════════════════════════
+
 CREATE TABLE IF NOT EXISTS layout_positions (
   node_id     TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-  layout_type TEXT NOT NULL,    -- 'free', 'orbit', 'grid'
+  layout_type TEXT NOT NULL,
   x           REAL NOT NULL,
   y           REAL NOT NULL,
   updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
@@ -110,14 +109,36 @@ CREATE TABLE IF NOT EXISTS layout_positions (
 
 CREATE INDEX IF NOT EXISTS idx_positions_layout ON layout_positions(layout_type);
 
--- System events: diagnostics, not domain events.
--- Separate table so domain queries are never polluted.
+-- ═══════════════════════════════════════════════════════════
+-- Settings (user preferences)
+-- ═══════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS settings (
+  key         TEXT PRIMARY KEY,
+  value       TEXT NOT NULL,
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Default orbit settings
+INSERT OR IGNORE INTO settings (key, value) VALUES ('orbit.inner_hours', '48');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('orbit.mid1_days', '4');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('orbit.mid2_weeks', '2');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('orbit.outer_weeks', '3');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('orbit.weekend_extend', 'false');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('orbit.weekend_hours', '72');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('view.default_layout', 'orbit');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('galaxy.project_orbit_days', '30');
+
+-- ═══════════════════════════════════════════════════════════
+-- System Events
+-- ═══════════════════════════════════════════════════════════
+
 CREATE TABLE IF NOT EXISTS system_events (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  level       TEXT NOT NULL DEFAULT 'info',  -- info, warn, error
-  category    TEXT NOT NULL,                  -- startup, shutdown, ingest, physics, vault, db
+  level       TEXT NOT NULL DEFAULT 'info',
+  category    TEXT NOT NULL,
   message     TEXT NOT NULL,
-  detail      TEXT DEFAULT '{}',             -- structured JSON for context
+  detail      TEXT DEFAULT '{}',
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -125,7 +146,7 @@ CREATE INDEX IF NOT EXISTS idx_sys_events_level ON system_events(level);
 CREATE INDEX IF NOT EXISTS idx_sys_events_cat ON system_events(category);
 `;
 
-// ── Row ↔ Domain Conversion ─────────────────────────────────
+// ── Row Types ───────────────────────────────────────────────
 
 export interface VaultFileRow {
   id: string;
@@ -147,11 +168,32 @@ export interface FileMetadataRow {
   extra: string;
 }
 
+export interface NodeRow {
+  id: string;
+  project_id: string | null;
+  parent_id: string | null;
+  label: string;
+  type: string;
+  is_folder: number;
+  vault_id: string | null;
+  source_path: string | null;
+  file_modified: string | null;
+  created_at: string;
+  updated_at: string;
+  meta: string;
+}
+
 export interface LayoutPositionRow {
   node_id: string;
   layout_type: string;
   x: number;
   y: number;
+  updated_at: string;
+}
+
+export interface SettingRow {
+  key: string;
+  value: string;
   updated_at: string;
 }
 

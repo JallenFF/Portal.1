@@ -1,40 +1,54 @@
 // ============================================================
-// Orbit Layout Strategy
+// Orbit Layout Strategy — v2 (Heat-Based)
 // ============================================================
-// Recency-based ring organization.
-// Files are pushed outward from center based on last-used time.
-// Newest items on inner rings, oldest on outer rings.
+// Ring placement is now driven by heat scores, not raw recency.
 //
-// Core is always empty (exclusion zone).
-// Hash-anchored angles prevent jitter between frames.
-// Ring buckets are configurable via config.params.
+// v1: rings = time buckets (0-24h, 1-3d, etc.)
+// v2: rings = heat tiers (active, reference, dormant, cold)
 //
-// This is a VIEW — it does not destroy free-mode positions.
-// Switching to orbit computes new targets; switching back
-// to free restores the user's manual arrangement.
+// The heat score is a blended signal of:
+//   - Direct usage (recency + frequency)
+//   - Project inheritance (active project boosts files)
+//   - Structural importance (many references = persistent heat)
+//   - User overrides (pinned, promoted)
+//   - Staleness penalty (gentle decay)
+//
+// Orbit reads heat scores. It does NOT compute them.
+// Heat engine runs separately on triggers (session start,
+// project entry, background tick). Orbit just reads the result.
+//
+// POSITION RULES:
+//   - Background decay updates SCORES, never positions
+//   - Mid/outer rings can reorder on explicit user trigger
+//   - Active ring positions respect user placement
+//   - Workspace positions are sacred (never touched)
+//
+// This is a VIEW — switching to free restores manual arrangement.
 // ============================================================
 
 import type { Node, Edge, NodeId } from "../../core/src/types";
 import type {
   LayoutStrategy, LayoutPosition, LayoutBody, LayoutConfig,
 } from "./types";
+import type { HeatScore, HeatTier } from "../../core/src/heat-types";
+import { DEFAULT_TIER_THRESHOLDS } from "../../core/src/heat-types";
 
 // ------------------------------------------------------------
-// Ring bucket definition
+// Ring definition (now by tier, not by time)
 // ------------------------------------------------------------
-export interface RingBucket {
+export interface HeatRing {
+  tier: HeatTier;
   label: string;
-  maxAgeMs: number;   // max age in milliseconds to belong to this ring
-  radius: number;     // distance from project center
+  radius: number;       // distance from project center
+  iconScale: number;    // 1.0 = normal, 0.5 = small
+  saturation: number;   // 1.0 = vivid, 0.3 = desaturated
 }
 
-const DEFAULT_RING_BUCKETS: RingBucket[] = [
-  { label: "0 – 24h",      maxAgeMs: 24 * 3600000,       radius: 80 },
-  { label: "1 – 3 days",   maxAgeMs: 3 * 86400000,       radius: 150 },
-  { label: "4 – 7 days",   maxAgeMs: 7 * 86400000,       radius: 220 },
-  { label: "8 – 30 days",  maxAgeMs: 30 * 86400000,      radius: 290 },
-  { label: "31 – 180 days", maxAgeMs: 180 * 86400000,    radius: 360 },
-  { label: "180+ days",    maxAgeMs: Infinity,            radius: 430 },
+const DEFAULT_HEAT_RINGS: HeatRing[] = [
+  { tier: "active",    label: "Active",    radius: 90,  iconScale: 1.2, saturation: 1.0 },
+  { tier: "reference", label: "Reference", radius: 200, iconScale: 1.0, saturation: 0.7 },
+  { tier: "dormant",   label: "Dormant",   radius: 310, iconScale: 0.7, saturation: 0.4 },
+  { tier: "cold",      label: "Cold Belt", radius: 400, iconScale: 0.4, saturation: 0.2 },
 ];
 
 // ------------------------------------------------------------
@@ -48,11 +62,18 @@ function hashCode(s: string): number {
   return Math.abs(h);
 }
 
-function getRingIndex(ageMs: number, buckets: RingBucket[]): number {
-  for (let i = 0; i < buckets.length; i++) {
-    if (ageMs <= buckets[i].maxAgeMs) return i;
+function getRingForTier(tier: HeatTier, rings: HeatRing[]): HeatRing {
+  return rings.find((r) => r.tier === tier) ?? rings[rings.length - 1];
+}
+
+/** Map ring tier to a numeric index for LayoutPosition.ring */
+function tierToIndex(tier: HeatTier): number {
+  switch (tier) {
+    case "active": return 0;
+    case "reference": return 1;
+    case "dormant": return 2;
+    case "cold": return 3;
   }
-  return buckets.length - 1;
 }
 
 // ------------------------------------------------------------
@@ -63,54 +84,84 @@ export const orbitLayout: LayoutStrategy = {
   label: "Orbit",
   usesPhysics: true,
 
+  /**
+   * Compute target positions from heat scores.
+   *
+   * Expected config.params:
+   *   - heatScores: Record<NodeId, HeatScore>  (required for v2)
+   *   - heatRings: HeatRing[]                  (optional, uses defaults)
+   *   - fallbackToRecency: boolean              (optional, true = v1 compat)
+   *   - now: number                             (optional, defaults to Date.now())
+   *
+   * If heatScores is not provided and fallbackToRecency is true,
+   * falls back to v1 time-based bucket placement for backward compat.
+   */
   computePositions(
     nodes: Node[],
     _edges: Edge[],
     config: LayoutConfig,
   ): Record<NodeId, LayoutPosition> {
-    const positions: Record<NodeId, LayoutPosition> = {};
-    const buckets = (config.params.ringBuckets as RingBucket[]) ?? DEFAULT_RING_BUCKETS;
-    const now = (config.params.now as number) ?? Date.now();
-    const maxDepth = (config.params.maxDepthRings as number) ?? buckets.length;
+    const heatScores = config.params.heatScores as Record<NodeId, HeatScore> | undefined;
+    const rings = (config.params.heatRings as HeatRing[]) ?? DEFAULT_HEAT_RINGS;
+    const fallback = (config.params.fallbackToRecency as boolean) ?? true;
 
-    // Count nodes per ring for angular spacing
-    const ringCounts: Map<number, number> = new Map();
-    const nodeRings: Map<NodeId, number> = new Map();
-
-    for (const node of nodes) {
-      const age = now - node.lastUsedAt;
-      const ring = getRingIndex(age, buckets);
-      const clampedRing = Math.min(ring, maxDepth - 1);
-      nodeRings.set(node.id, clampedRing);
-      ringCounts.set(clampedRing, (ringCounts.get(clampedRing) || 0) + 1);
+    // If no heat scores available, fall back to v1 recency
+    if (!heatScores && fallback) {
+      return computePositionsV1(nodes, config);
     }
 
-    // Track how many we've placed per ring (for even angular spacing)
-    const ringPlaced: Map<number, number> = new Map();
+    const positions: Record<NodeId, LayoutPosition> = {};
 
+    // Group nodes by tier for angular spacing
+    const tierGroups = new Map<HeatTier, Node[]>();
     for (const node of nodes) {
-      const ringIdx = nodeRings.get(node.id)!;
-      const bucket = buckets[Math.min(ringIdx, buckets.length - 1)];
-      const count = ringCounts.get(ringIdx) || 1;
-      const placed = ringPlaced.get(ringIdx) || 0;
+      const score = heatScores?.[node.id];
+      const tier: HeatTier = score?.tier ?? "cold";
+      if (!tierGroups.has(tier)) tierGroups.set(tier, []);
+      tierGroups.get(tier)!.push(node);
+    }
 
-      // Stable base angle from hash
-      const baseAngle = (2 * Math.PI * (hashCode(node.id) % 10000)) / 10000;
-      
-      // Distribute evenly within the ring, offset by base angle
-      const spacing = (2 * Math.PI) / Math.max(count, 1);
-      const angle = baseAngle + placed * spacing * 0.3; // blend hash + even spacing
+    // Place each group
+    for (const [tier, group] of tierGroups) {
+      const ring = getRingForTier(tier, rings);
+      const count = group.length;
 
-      const r = bucket.radius;
+      // Sort within tier by score descending for consistent ordering
+      if (heatScores) {
+        group.sort((a, b) => {
+          const sa = heatScores[a.id]?.score ?? 0;
+          const sb = heatScores[b.id]?.score ?? 0;
+          return sb - sa;
+        });
+      }
 
-      positions[node.id] = {
-        x: r * Math.cos(angle),
-        y: r * Math.sin(angle),
-        ring: ringIdx,
-        angle,
-      };
+      for (let i = 0; i < group.length; i++) {
+        const node = group[i];
 
-      ringPlaced.set(ringIdx, placed + 1);
+        // Stable base angle from node ID hash
+        const baseAngle = (2 * Math.PI * (hashCode(node.id) % 10000)) / 10000;
+
+        // Distribute evenly, blended with hash for stability
+        const spacing = (2 * Math.PI) / Math.max(count, 1);
+        const angle = baseAngle + i * spacing * 0.3;
+
+        // Slight radius variation by score within tier (hotter = slightly closer)
+        const score = heatScores?.[node.id]?.score ?? 0;
+        const tierScoreRange = 25; // each tier spans 25 points
+        const tierBase = tier === "active" ? 75 : tier === "reference" ? 50 : tier === "dormant" ? 25 : 0;
+        const normalizedInTier = tierScoreRange > 0
+          ? (score - tierBase) / tierScoreRange
+          : 0;
+        const radiusVariance = ring.radius * 0.15; // ±15% within tier
+        const r = ring.radius - normalizedInTier * radiusVariance;
+
+        positions[node.id] = {
+          x: r * Math.cos(angle),
+          y: r * Math.sin(angle),
+          ring: tierToIndex(tier),
+          angle,
+        };
+      }
     }
 
     return positions;
@@ -139,7 +190,7 @@ export const orbitLayout: LayoutStrategy = {
         continue;
       }
 
-      // Attraction to orbit target
+      // Attraction to heat-based orbit target
       const target = targets[body.id];
       if (target) {
         fx += orbitAttract * (target.x - body.x);
@@ -161,7 +212,7 @@ export const orbitLayout: LayoutStrategy = {
         fy -= pull * (body.y / distToCenter);
       }
 
-      // File-file repulsion (within ring and cross-ring)
+      // File-file repulsion
       for (const other of bodies) {
         if (other.id === body.id) continue;
         const dx = body.x - other.x;
@@ -181,6 +232,70 @@ export const orbitLayout: LayoutStrategy = {
   },
 };
 
-// Export ring buckets for renderer to draw circles
-export { DEFAULT_RING_BUCKETS };
-export type { RingBucket as RingBucketType };
+// ------------------------------------------------------------
+// v1 fallback (pure recency — backward compat)
+// ------------------------------------------------------------
+
+interface V1RingBucket {
+  label: string;
+  maxAgeMs: number;
+  radius: number;
+}
+
+const V1_RING_BUCKETS: V1RingBucket[] = [
+  { label: "0 – 24h",      maxAgeMs: 24 * 3600000,       radius: 80 },
+  { label: "1 – 3 days",   maxAgeMs: 3 * 86400000,       radius: 150 },
+  { label: "4 – 7 days",   maxAgeMs: 7 * 86400000,       radius: 220 },
+  { label: "8 – 30 days",  maxAgeMs: 30 * 86400000,      radius: 290 },
+  { label: "31 – 180 days", maxAgeMs: 180 * 86400000,    radius: 360 },
+  { label: "180+ days",    maxAgeMs: Infinity,            radius: 430 },
+];
+
+function computePositionsV1(
+  nodes: Node[],
+  config: LayoutConfig,
+): Record<NodeId, LayoutPosition> {
+  const positions: Record<NodeId, LayoutPosition> = {};
+  const buckets = (config.params.ringBuckets as V1RingBucket[]) ?? V1_RING_BUCKETS;
+  const now = (config.params.now as number) ?? Date.now();
+
+  const ringCounts = new Map<number, number>();
+  const nodeRings = new Map<NodeId, number>();
+
+  for (const node of nodes) {
+    const age = now - node.lastUsedAt;
+    let ring = buckets.length - 1;
+    for (let i = 0; i < buckets.length; i++) {
+      if (age <= buckets[i].maxAgeMs) { ring = i; break; }
+    }
+    nodeRings.set(node.id, ring);
+    ringCounts.set(ring, (ringCounts.get(ring) || 0) + 1);
+  }
+
+  const ringPlaced = new Map<number, number>();
+  for (const node of nodes) {
+    const ringIdx = nodeRings.get(node.id)!;
+    const bucket = buckets[ringIdx];
+    const count = ringCounts.get(ringIdx) || 1;
+    const placed = ringPlaced.get(ringIdx) || 0;
+
+    const baseAngle = (2 * Math.PI * (hashCode(node.id) % 10000)) / 10000;
+    const spacing = (2 * Math.PI) / Math.max(count, 1);
+    const angle = baseAngle + placed * spacing * 0.3;
+
+    positions[node.id] = {
+      x: bucket.radius * Math.cos(angle),
+      y: bucket.radius * Math.sin(angle),
+      ring: ringIdx,
+      angle,
+    };
+
+    ringPlaced.set(ringIdx, placed + 1);
+  }
+
+  return positions;
+}
+
+// Export ring definitions for renderer
+export { DEFAULT_HEAT_RINGS };
+export type { HeatRing };
