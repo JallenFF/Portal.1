@@ -3,3 +3,5 @@ target/
 .portal/
 dist-build/
 *.exe
+
+*.lnk
