@@ -24,3 +24,26 @@ export interface Mouse {
   worldY: number;
   down: boolean;
 }
+
+// ── Workspace Types ──────────────────────────────────────
+
+export interface WorkspaceNote {
+  id: string;
+  projectId: string;
+  content: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  zOrder: number;
+}
+
+export interface WorkspaceEdge {
+  id: string;
+  sourceId: string;
+  targetId: string;
+  type: string;
+  label?: string;
+  meta?: Record<string, any>;
+}

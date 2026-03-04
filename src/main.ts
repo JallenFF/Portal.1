@@ -15,6 +15,8 @@ import { initInput } from './input';
 import { initHUD, updateHUD } from './hud';
 import { initRenderer, startRenderLoop } from './renderer';
 import { initFileWindows } from './file-window';
+import { initNoteEditor } from './note-editor';
+import { createNote, createEdge } from './api';
 
 // ── Canvas Setup ─────────────────────────────────────────────
 
@@ -37,6 +39,8 @@ const tbCount = document.getElementById('tb-count')!;
 const tbExit = document.getElementById('tb-exit')!;
 const tbOpen = document.getElementById('tb-open')!;
 const tbResetLayout = document.getElementById('tb-reset-layout')!;
+const tbAddNote = document.getElementById('tb-add-note')!;
+const tbConnect = document.getElementById('tb-connect')!;
 
 // ── Wire Callbacks ───────────────────────────────────────────
 
@@ -89,10 +93,43 @@ tbResetLayout.addEventListener('click', () => {
   }
 });
 
+tbAddNote.addEventListener('click', () => {
+  if (!state.activeProject) return;
+  const wx = state.activeProject.x;
+  const wy = state.activeProject.y;
+  createNote(state.activeProject.id, wx, wy).then(note => {
+    if (note) {
+      state.workspaceNotes.push(note);
+      state.selectedNote = note;
+      state.editingNote = note;
+      (window as any).__portalOpenNoteEditor?.(note);
+    }
+  });
+});
+
+tbConnect.addEventListener('click', () => {
+  if (!state.activeProject) return;
+  if (state.connectionMode) {
+    // Toggle off
+    state.connectionMode = null;
+    tbConnect.classList.remove('active');
+    updateHUD();
+    return;
+  }
+  const targetId = state.selectedNote?.id || state.selectedNode?.id;
+  if (targetId) {
+    const isNote = state.selectedNote !== null;
+    state.connectionMode = { sourceId: targetId, sourceType: isNote ? 'note' : 'node' };
+    tbConnect.classList.add('active');
+    updateHUD();
+  }
+});
+
 // ── Initialize Modules ───────────────────────────────────────
 
 initRenderer(canvas);
 initFileWindows();
+initNoteEditor(canvas);
 initInput(canvas, settingsPanel);
 initHUD({
   hudProject: document.getElementById('hud-project')!,

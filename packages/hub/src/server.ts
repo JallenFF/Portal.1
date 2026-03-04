@@ -187,15 +187,17 @@ app.get('/projects/:id', async (req) => {
   // Recompute heat scores on project entry
   computeAndCacheHeat(id);
 
-  // Get immediate children with heat scores
+  // Get immediate children with heat scores + pin status
   const children = db.prepare(`
     SELECT n.*, v.filename, v.ext as vault_ext, v.size_bytes, v.mime_type,
            fm.file_created, fm.file_modified as meta_modified,
-           hs.score as heat_score, hs.tier as heat_tier
+           hs.score as heat_score, hs.tier as heat_tier,
+           COALESCE(hm.pinned, 0) as pinned
     FROM nodes n
     LEFT JOIN vault_files v ON n.vault_id = v.id
     LEFT JOIN file_metadata fm ON n.vault_id = fm.vault_id
     LEFT JOIN heat_scores hs ON n.id = hs.node_id
+    LEFT JOIN heat_metadata hm ON n.id = hm.node_id
     WHERE n.project_id = ? AND n.parent_id IS NULL
     ORDER BY n.is_folder DESC, hs.score DESC, n.file_modified DESC
   `).all(id);
@@ -231,11 +233,13 @@ app.get('/nodes/:id/children', async (req) => {
   const children = db.prepare(`
     SELECT n.*, v.filename, v.ext as vault_ext, v.size_bytes, v.mime_type,
            fm.file_created, fm.file_modified as meta_modified,
-           hs.score as heat_score, hs.tier as heat_tier
+           hs.score as heat_score, hs.tier as heat_tier,
+           COALESCE(hm.pinned, 0) as pinned
     FROM nodes n
     LEFT JOIN vault_files v ON n.vault_id = v.id
     LEFT JOIN file_metadata fm ON n.vault_id = fm.vault_id
     LEFT JOIN heat_scores hs ON n.id = hs.node_id
+    LEFT JOIN heat_metadata hm ON n.id = hm.node_id
     WHERE n.parent_id = ?
     ORDER BY n.is_folder DESC, hs.score DESC, n.file_modified DESC
   `).all(id);
@@ -779,6 +783,133 @@ app.put('/nodes/:id/promote', async (req) => {
   const row = db.prepare('SELECT promoted FROM heat_metadata WHERE node_id = ?').get(id) as any;
   logger.info('heat', `Toggled promote for node ${id}: promoted=${row?.promoted}`);
   return { ok: true, nodeId: id, promoted: row?.promoted === 1 };
+});
+
+// ── Workspace Notes ──────────────────────────────────────
+
+app.get('/workspaces/:projectId/notes', async (req) => {
+  const { projectId } = req.params as { projectId: string };
+  const notes = db.prepare(
+    'SELECT * FROM workspace_notes WHERE project_id = ? ORDER BY z_order ASC'
+  ).all(projectId);
+  return { notes };
+});
+
+app.post('/workspaces/:projectId/notes', async (req) => {
+  const { projectId } = req.params as { projectId: string };
+  const { content, x, y, color, width, height } = req.body as {
+    content?: string; x?: number; y?: number;
+    color?: string; width?: number; height?: number;
+  };
+  const id = crypto.randomUUID();
+  const maxZ = (db.prepare(
+    'SELECT MAX(z_order) as mz FROM workspace_notes WHERE project_id = ?'
+  ).get(projectId) as any)?.mz || 0;
+
+  db.prepare(`
+    INSERT INTO workspace_notes (id, project_id, content, x, y, width, height, color, z_order)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, projectId, content || '', x || 0, y || 0,
+    width || 200, height || 150, color || '#FFF8DC', maxZ + 1);
+
+  logger.info('workspace', `Note created in project ${projectId}`, { noteId: id });
+  const note = db.prepare('SELECT * FROM workspace_notes WHERE id = ?').get(id);
+  return { note };
+});
+
+app.put('/workspaces/notes/:noteId', async (req) => {
+  const { noteId } = req.params as { noteId: string };
+  const body = req.body as Record<string, any>;
+  const existing = db.prepare('SELECT * FROM workspace_notes WHERE id = ?').get(noteId);
+  if (!existing) return { error: 'Note not found' };
+
+  const fields: string[] = [];
+  const values: any[] = [];
+  for (const key of ['content', 'x', 'y', 'width', 'height', 'color', 'z_order']) {
+    if (body[key] !== undefined) {
+      fields.push(`${key} = ?`);
+      values.push(body[key]);
+    }
+  }
+  if (fields.length === 0) return { error: 'No fields to update' };
+
+  fields.push("updated_at = datetime('now')");
+  values.push(noteId);
+
+  db.prepare(`UPDATE workspace_notes SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  const note = db.prepare('SELECT * FROM workspace_notes WHERE id = ?').get(noteId);
+  return { note };
+});
+
+app.delete('/workspaces/notes/:noteId', async (req) => {
+  const { noteId } = req.params as { noteId: string };
+  const existing = db.prepare('SELECT * FROM workspace_notes WHERE id = ?').get(noteId);
+  if (!existing) return { error: 'Note not found' };
+  db.prepare('DELETE FROM workspace_notes WHERE id = ?').run(noteId);
+  logger.info('workspace', `Note deleted: ${noteId}`);
+  return { ok: true, noteId };
+});
+
+// ── Workspace Edges (connections between items) ──────────
+
+app.get('/workspaces/:projectId/edges', async (req) => {
+  const { projectId } = req.params as { projectId: string };
+  // Get edges where source or target is a node in this project, or a note in this project
+  const edges = db.prepare(`
+    SELECT e.* FROM edges e
+    WHERE e.source_id IN (
+      SELECT id FROM nodes WHERE project_id = ?
+      UNION SELECT id FROM workspace_notes WHERE project_id = ?
+    ) OR e.target_id IN (
+      SELECT id FROM nodes WHERE project_id = ?
+      UNION SELECT id FROM workspace_notes WHERE project_id = ?
+    )
+  `).all(projectId, projectId, projectId, projectId);
+  return { edges };
+});
+
+app.post('/workspaces/:projectId/edges', async (req) => {
+  const { projectId } = req.params as { projectId: string };
+  const { source_id, target_id, type, label } = req.body as {
+    source_id: string; target_id: string; type?: string; label?: string;
+  };
+  const id = crypto.randomUUID();
+  const meta = label ? JSON.stringify({ label }) : '{}';
+  db.prepare(`
+    INSERT INTO edges (id, source_id, target_id, type, meta) VALUES (?, ?, ?, ?, ?)
+  `).run(id, source_id, target_id, type || 'link', meta);
+
+  logger.info('workspace', `Edge created: ${source_id} → ${target_id}`, { edgeId: id });
+  const edge = db.prepare('SELECT * FROM edges WHERE id = ?').get(id);
+  return { edge };
+});
+
+app.put('/workspaces/edges/:edgeId', async (req) => {
+  const { edgeId } = req.params as { edgeId: string };
+  const { label, type } = req.body as { label?: string; type?: string };
+  const existing = db.prepare('SELECT * FROM edges WHERE id = ?').get(edgeId);
+  if (!existing) return { error: 'Edge not found' };
+
+  if (label !== undefined) {
+    const meta = JSON.parse((existing as any).meta || '{}');
+    meta.label = label;
+    db.prepare('UPDATE edges SET meta = ? WHERE id = ?').run(JSON.stringify(meta), edgeId);
+  }
+  if (type !== undefined) {
+    db.prepare('UPDATE edges SET type = ? WHERE id = ?').run(type, edgeId);
+  }
+
+  const edge = db.prepare('SELECT * FROM edges WHERE id = ?').get(edgeId);
+  return { edge };
+});
+
+app.delete('/workspaces/edges/:edgeId', async (req) => {
+  const { edgeId } = req.params as { edgeId: string };
+  const existing = db.prepare('SELECT * FROM edges WHERE id = ?').get(edgeId);
+  if (!existing) return { error: 'Edge not found' };
+  db.prepare('DELETE FROM edges WHERE id = ?').run(edgeId);
+  logger.info('workspace', `Edge deleted: ${edgeId}`);
+  return { ok: true, edgeId };
 });
 
 // ── Start ───────────────────────────────────────────────────

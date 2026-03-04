@@ -95,3 +95,90 @@ export async function moveNode(nodeId: string, projectId?: string | null, parent
     })).json();
   } catch (e) { console.error('Move failed:', e); return {}; }
 }
+
+// ── Workspace Notes ─────────────────────────────────────
+
+import type { WorkspaceNote, WorkspaceEdge } from './types';
+
+export async function fetchWorkspaceNotes(projectId: string): Promise<WorkspaceNote[]> {
+  try {
+    const res = await (await fetch(`${HUB}/workspaces/${projectId}/notes`)).json();
+    return (res.notes || []).map((n: any) => ({
+      id: n.id, projectId: n.project_id, content: n.content,
+      x: n.x, y: n.y, width: n.width, height: n.height,
+      color: n.color, zOrder: n.z_order,
+    }));
+  } catch { return []; }
+}
+
+export async function createNote(projectId: string, x: number, y: number, content = '', color = '#FFF8DC'): Promise<WorkspaceNote | null> {
+  try {
+    const res = await (await fetch(`${HUB}/workspaces/${projectId}/notes`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, x, y, color }),
+    })).json();
+    const n = res.note;
+    return n ? { id: n.id, projectId: n.project_id, content: n.content,
+      x: n.x, y: n.y, width: n.width, height: n.height,
+      color: n.color, zOrder: n.z_order } : null;
+  } catch { return null; }
+}
+
+export async function updateNote(noteId: string, patch: Partial<{ content: string; x: number; y: number; width: number; height: number; color: string; z_order: number }>): Promise<void> {
+  try {
+    await fetch(`${HUB}/workspaces/notes/${noteId}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+  } catch (e) { console.error('Note update failed:', e); }
+}
+
+export async function deleteNote(noteId: string): Promise<void> {
+  try {
+    await fetch(`${HUB}/workspaces/notes/${noteId}`, { method: 'DELETE' });
+  } catch (e) { console.error('Note delete failed:', e); }
+}
+
+// ── Workspace Edges ─────────────────────────────────────
+
+export async function fetchWorkspaceEdges(projectId: string): Promise<WorkspaceEdge[]> {
+  try {
+    const res = await (await fetch(`${HUB}/workspaces/${projectId}/edges`)).json();
+    return (res.edges || []).map((e: any) => {
+      const meta = JSON.parse(e.meta || '{}');
+      return {
+        id: e.id, sourceId: e.source_id, targetId: e.target_id,
+        type: e.type, label: meta.label, meta,
+      };
+    });
+  } catch { return []; }
+}
+
+export async function createEdge(projectId: string, sourceId: string, targetId: string, label?: string): Promise<WorkspaceEdge | null> {
+  try {
+    const res = await (await fetch(`${HUB}/workspaces/${projectId}/edges`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_id: sourceId, target_id: targetId, label }),
+    })).json();
+    const e = res.edge;
+    if (!e) return null;
+    const meta = JSON.parse(e.meta || '{}');
+    return { id: e.id, sourceId: e.source_id, targetId: e.target_id,
+      type: e.type, label: meta.label, meta };
+  } catch { return null; }
+}
+
+export async function deleteEdge(edgeId: string): Promise<void> {
+  try {
+    await fetch(`${HUB}/workspaces/edges/${edgeId}`, { method: 'DELETE' });
+  } catch (e) { console.error('Edge delete failed:', e); }
+}
+
+export async function updateEdge(edgeId: string, label?: string): Promise<void> {
+  try {
+    await fetch(`${HUB}/workspaces/edges/${edgeId}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label }),
+    });
+  } catch (e) { console.error('Edge update failed:', e); }
+}

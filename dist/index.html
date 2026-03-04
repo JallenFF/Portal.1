@@ -131,8 +131,32 @@
       background: rgba(255,255,255,0.15);
       color: #fff;
     }
+
+    /* Context Menu */
+    #context-menu {
+      display: none; position: fixed; z-index: 100;
+      background: rgba(20,20,28,0.96); border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 8px; padding: 4px 0; min-width: 160px;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    }
+    .ctx-item {
+      padding: 7px 14px; font-size: 12px; color: rgba(255,255,255,0.75);
+      cursor: pointer; transition: all 0.1s;
+    }
+    .ctx-item:hover { background: rgba(255,255,255,0.1); color: #fff; }
+    .ctx-danger { color: #f87171; }
+    .ctx-danger:hover { background: rgba(248,113,113,0.15); color: #fca5a5; }
+    .ctx-divider { height: 1px; background: rgba(255,255,255,0.08); margin: 3px 0; }
+
+    /* Active toolbar button state */
+    .tb-btn.active {
+      background: rgba(59,130,246,0.2);
+      border-color: rgba(59,130,246,0.4);
+      color: #93c5fd;
+    }
   </style>
-  <script type="module" crossorigin src="/assets/index-C_OIP6vl.js"></script>
+  <script type="module" crossorigin src="/assets/index-DQSBEfM5.js"></script>
 </head>
 <body>
   <canvas id="canvas"></canvas>
@@ -144,9 +168,11 @@
     <div class="tb-count" id="tb-count"></div>
     <div class="tb-divider"></div>
     <button class="tb-btn" id="tb-open" title="Open file in OS app">Open</button>
+    <button class="tb-btn" id="tb-add-note" title="Add sticky note (N)">+ Note</button>
+    <button class="tb-btn" id="tb-connect" title="Connect items (C)">Connect</button>
     <button class="tb-btn" id="tb-reset-layout" title="Reset to auto-layout">Auto-arrange</button>
     <div class="tb-spacer"></div>
-    <span class="tb-hint">drag = move · dbl-click = open · Esc = back</span>
+    <span class="tb-hint">N = note · C = connect · right-click = menu · Esc = back</span>
     <button class="tb-btn" id="tb-exit" title="Back to galaxy">← Galaxy</button>
   </div>
 
@@ -170,6 +196,9 @@
 
   <!-- Settings Panel -->
   <div id="settings-panel"></div>
+
+  <!-- Context Menu -->
+  <div id="context-menu"></div>
 
 </body>
 </html>

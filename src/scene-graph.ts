@@ -35,6 +35,9 @@ export interface SceneNode {
   // Loading state
   loadState: 'unloaded' | 'loading' | 'loaded';
 
+  // Flags
+  isPinned?: boolean;
+
   // API metadata (pass-through for actions)
   nodeCount?: number;       // project only: total descendant count
   latestModified?: string;

@@ -144,6 +144,26 @@ CREATE TABLE IF NOT EXISTS system_events (
 
 CREATE INDEX IF NOT EXISTS idx_sys_events_level ON system_events(level);
 CREATE INDEX IF NOT EXISTS idx_sys_events_cat ON system_events(category);
+
+-- ═══════════════════════════════════════════════════════════
+-- Workspace Notes (sticky notes on the benchtop)
+-- ═══════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS workspace_notes (
+  id         TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  content    TEXT NOT NULL DEFAULT '',
+  x          REAL NOT NULL DEFAULT 0,
+  y          REAL NOT NULL DEFAULT 0,
+  width      REAL NOT NULL DEFAULT 200,
+  height     REAL NOT NULL DEFAULT 150,
+  color      TEXT NOT NULL DEFAULT '#FFF8DC',
+  z_order    INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ws_notes_project ON workspace_notes(project_id);
 `;
 
 // ── Row Types ───────────────────────────────────────────────
@@ -213,4 +233,28 @@ export interface EventRow {
   entity_id: string | null;
   payload: string;
   created_at: string;
+}
+
+export interface WorkspaceNoteRow {
+  id: string;
+  project_id: string;
+  content: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  z_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EdgeRow {
+  id: string;
+  source_id: string;
+  target_id: string;
+  type: string;
+  weight: number;
+  created_at: string;
+  meta: string;
 }

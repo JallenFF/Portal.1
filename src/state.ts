@@ -5,7 +5,7 @@
 // state machine. Camera moves freely in one continuous space.
 // ============================================================
 
-import type { Camera, Mouse } from './types';
+import type { Camera, Mouse, WorkspaceNote, WorkspaceEdge } from './types';
 import type { SceneNode } from './scene-graph';
 
 // ── Camera ───────────────────────────────────────────────────
@@ -39,6 +39,20 @@ export interface AppStateV2 {
   dragOffsetX: number;             // world-space drag offset
   dragOffsetY: number;
 
+  // Workspace benchtop
+  workspaceNotes: WorkspaceNote[];
+  workspaceEdges: WorkspaceEdge[];
+  selectedNote: WorkspaceNote | null;
+  selectedEdge: WorkspaceEdge | null;
+  editingNote: WorkspaceNote | null;
+  dragNote: WorkspaceNote | null;
+  dragNoteOffsetX: number;
+  dragNoteOffsetY: number;
+  resizingNote: WorkspaceNote | null;
+  connectionMode: null | { sourceId: string; sourceType: 'node' | 'note' };
+  contextMenu: null | { x: number; y: number; worldX: number; worldY: number;
+    target: 'canvas' | 'node' | 'note' | 'edge'; targetId: string | null };
+
   // App
   loading: boolean;
   error: string | null;
@@ -56,6 +70,17 @@ export const state: AppStateV2 = {
   dragNode: null,
   dragOffsetX: 0,
   dragOffsetY: 0,
+  workspaceNotes: [],
+  workspaceEdges: [],
+  selectedNote: null,
+  selectedEdge: null,
+  editingNote: null,
+  dragNote: null,
+  dragNoteOffsetX: 0,
+  dragNoteOffsetY: 0,
+  resizingNote: null,
+  connectionMode: null,
+  contextMenu: null,
   loading: true,
   error: null,
   layout: 'orbit',

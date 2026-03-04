@@ -56,13 +56,23 @@ export function updateHUD(): void {
     hudBreadcrumb.style.display = 'none';
     hudProject.style.display = 'none';
 
-    const sel = state.selectedNode;
-    if (sel && sel.type === 'file') {
-      hudHint.textContent = `${sel.label} · heat: ${Math.round(sel.heat)} (${sel.heatTier}) · dbl-click = open · P = pin`;
-    } else if (sel && sel.type === 'folder') {
-      hudHint.textContent = `${sel.label} · ${sel.childCount} items · dbl-click = enter`;
+    if (state.connectionMode) {
+      hudHint.textContent = 'Click target to connect · Esc = cancel';
+    } else if (state.editingNote) {
+      hudHint.textContent = 'Editing note · Enter = save · Shift+Enter = newline · Esc = cancel';
+    } else if (state.selectedNote) {
+      hudHint.textContent = 'Enter = edit · Delete = remove · C = connect · Esc = deselect';
+    } else if (state.selectedEdge) {
+      hudHint.textContent = 'Delete = remove connection · Esc = deselect';
+    } else if (state.selectedNode) {
+      const sel = state.selectedNode;
+      if (sel.type === 'file') {
+        hudHint.textContent = `${sel.label} · heat: ${Math.round(sel.heat)} (${sel.heatTier}) · dbl-click = open · P = pin · C = connect`;
+      } else {
+        hudHint.textContent = `${sel.label} · ${sel.childCount} items · dbl-click = enter`;
+      }
     } else {
-      hudHint.textContent = 'drag = move · click = select · dbl-click = open · Esc = back';
+      hudHint.textContent = 'N = note · C = connect · right-click = menu · drag = move · Esc = back';
     }
     return;
   }

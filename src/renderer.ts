@@ -15,10 +15,12 @@
 
 import { state, camera } from './state';
 import type { SceneNode } from './scene-graph';
+import { findNode } from './scene-graph';
 import { requestLoad, shouldLoad } from './lazy-loader';
 import { lerp, clamp, worldToScreen, roundRect } from './math';
 import { getExtColor } from './colors';
 import { getTextPreview, getImageThumbnail, isContentLoading } from './content-cache';
+import type { WorkspaceNote, WorkspaceEdge } from './types';
 
 let _canvas: HTMLCanvasElement;
 let _ctx: CanvasRenderingContext2D;
@@ -81,7 +83,10 @@ function render(): void {
     drawWorkspaceBackground(W, H, state.activeProject);
     drawDotGrid(W, H);
 
-    // Render only the active project's children (not all roots)
+    // 1. Edges (behind everything)
+    drawWorkspaceEdges(W, H);
+
+    // 2. Render nodes
     const ap = state.activeProject;
     if (ap.children) {
       for (const child of ap.children) {
@@ -89,7 +94,10 @@ function render(): void {
       }
     }
 
-    // Draw the project boundary ring (subtle)
+    // 3. Sticky notes (on top of nodes)
+    drawWorkspaceNotes(W, H);
+
+    // 4. Project boundary ring (subtle)
     const sc = worldToScreen(ap.x, ap.y, _canvas);
     const screenR = ap.radius * camera.zoom;
     _ctx.strokeStyle = ap.color + '15';
@@ -100,15 +108,22 @@ function render(): void {
     _ctx.stroke();
     _ctx.setLineDash([]);
 
-    // Selection ring
+    // 5. Selection rings
     if (state.selectedNode && state.selectedNode !== ap) {
       drawSelectionRing(state.selectedNode);
     }
 
-    // Drag indicator
+    // 6. Drag indicators
     if (state.dragNode) {
       drawDragIndicator(state.dragNode);
     }
+
+    // 7. Connection mode line (dashed line following cursor)
+    if (state.connectionMode) {
+      drawConnectionModeLine(W, H);
+    }
+
+    // 8. Context menu is HTML overlay (not drawn here)
   } else {
     // ── Galaxy Mode ───────────────────────────────────────────
     drawDotGrid(W, H);
@@ -150,6 +165,11 @@ function renderNode(node: SceneNode, W: number, H: number): void {
     drawFolderNode(sc, screenR, node, isHovered, isSelected);
   } else {
     drawFileNode(sc, screenR, node, isHovered, isSelected);
+  }
+
+  // Pin badge
+  if (node.isPinned && screenR > 10) {
+    drawPinBadge(sc, screenR, node);
   }
 
   // Label (show if node is big enough; skip for files in thumbnail mode)
@@ -826,6 +846,277 @@ function drawDragIndicator(node: SceneNode): void {
   }
   _ctx.stroke();
   _ctx.setLineDash([]);
+}
+
+// ── Pin Badge ───────────────────────────────────────────────
+
+function drawPinBadge(sc: { x: number; y: number }, screenR: number, node: SceneNode): void {
+  // Small filled circle with pin icon at top-right of node
+  const badgeR = clamp(screenR * 0.15, 4, 10);
+  let bx: number, by: number;
+
+  if (node.type === 'file' && screenR >= 12) {
+    // Top-right of thumbnail card
+    const cardW = screenR * 1.5;
+    const cardH = screenR * 2.0;
+    bx = sc.x + cardW / 2 - badgeR;
+    by = sc.y - cardH / 2 + badgeR;
+  } else {
+    bx = sc.x + screenR * 0.6;
+    by = sc.y - screenR * 0.6;
+  }
+
+  // Badge background
+  _ctx.fillStyle = '#f59e0b';
+  _ctx.beginPath();
+  _ctx.arc(bx, by, badgeR, 0, Math.PI * 2);
+  _ctx.fill();
+
+  // Pin icon (small vertical line + dot)
+  if (badgeR > 5) {
+    _ctx.strokeStyle = '#fff';
+    _ctx.lineWidth = 1.5;
+    _ctx.beginPath();
+    _ctx.moveTo(bx, by - badgeR * 0.4);
+    _ctx.lineTo(bx, by + badgeR * 0.3);
+    _ctx.stroke();
+    _ctx.fillStyle = '#fff';
+    _ctx.beginPath();
+    _ctx.arc(bx, by - badgeR * 0.4, 1.5, 0, Math.PI * 2);
+    _ctx.fill();
+  }
+}
+
+// ── Workspace Notes Renderer ────────────────────────────────
+
+function drawWorkspaceNotes(_W: number, _H: number): void {
+  // Sort by z_order (lowest first = drawn first = behind)
+  const sorted = [...state.workspaceNotes].sort((a, b) => a.zOrder - b.zOrder);
+
+  for (const note of sorted) {
+    const sc = worldToScreen(note.x, note.y, _canvas);
+    const screenW = note.width * camera.zoom;
+    const screenH = note.height * camera.zoom;
+
+    // Viewport culling
+    if (sc.x + screenW < 0 || sc.x > _W || sc.y + screenH < 0 || sc.y > _H) continue;
+
+    // Too small to see
+    if (screenW < 4 && screenH < 4) continue;
+
+    const isSelected = state.selectedNote === note;
+    const isDragging = state.dragNote === note;
+    const isEditing = state.editingNote === note;
+
+    // Tiny: just a colored dot
+    if (screenW < 20) {
+      _ctx.fillStyle = note.color;
+      _ctx.globalAlpha = 0.7;
+      _ctx.fillRect(sc.x, sc.y, Math.max(screenW, 3), Math.max(screenH, 3));
+      _ctx.globalAlpha = 1;
+      continue;
+    }
+
+    const cornerR = Math.max(2, Math.min(screenW, screenH) * 0.04);
+
+    // Shadow
+    if (screenW > 30) {
+      _ctx.fillStyle = 'rgba(0,0,0,0.2)';
+      roundRect(_ctx, sc.x + 3, sc.y + 3, screenW, screenH, cornerR);
+      _ctx.fill();
+    }
+
+    // Card body
+    _ctx.fillStyle = note.color;
+    roundRect(_ctx, sc.x, sc.y, screenW, screenH, cornerR);
+    _ctx.fill();
+
+    // Border
+    _ctx.strokeStyle = isSelected ? '#3b82f6' : isDragging ? 'rgba(100,200,255,0.7)' : 'rgba(0,0,0,0.15)';
+    _ctx.lineWidth = isSelected ? 2.5 : 1;
+    roundRect(_ctx, sc.x, sc.y, screenW, screenH, cornerR);
+    _ctx.stroke();
+
+    // Content text (if big enough and not editing)
+    if (screenW > 50 && !isEditing) {
+      drawNoteText(note, sc.x, sc.y, screenW, screenH);
+    } else if (screenW > 20 && note.content && !isEditing) {
+      // Title only
+      const fontSize = clamp(Math.round(screenH * 0.15), 6, 14);
+      _ctx.font = `bold ${fontSize}px system-ui`;
+      _ctx.fillStyle = 'rgba(0,0,0,0.7)';
+      _ctx.textAlign = 'left';
+      const title = note.content.split('\n')[0].slice(0, 30);
+      _ctx.fillText(title, sc.x + 6, sc.y + fontSize + 4);
+    }
+
+    // Resize handle (bottom-right triangle)
+    if (screenW > 40 && (isSelected || isDragging)) {
+      const hSize = Math.min(16, screenW * 0.1);
+      const hx = sc.x + screenW;
+      const hy = sc.y + screenH;
+      _ctx.fillStyle = 'rgba(0,0,0,0.2)';
+      _ctx.beginPath();
+      _ctx.moveTo(hx, hy);
+      _ctx.lineTo(hx - hSize, hy);
+      _ctx.lineTo(hx, hy - hSize);
+      _ctx.closePath();
+      _ctx.fill();
+    }
+  }
+}
+
+function drawNoteText(note: WorkspaceNote, sx: number, sy: number, sw: number, sh: number): void {
+  const pad = sw * 0.08;
+  const maxW = sw - pad * 2;
+  const maxH = sh - pad * 2;
+
+  const fontSize = clamp(Math.round(sh * 0.08), 6, 16);
+  const lineH = fontSize * 1.4;
+  const maxLines = Math.floor(maxH / lineH);
+
+  _ctx.font = `${fontSize}px system-ui`;
+  _ctx.fillStyle = 'rgba(0,0,0,0.75)';
+  _ctx.textAlign = 'left';
+
+  const lines = note.content.split('\n');
+  let drawLine = 0;
+
+  for (let i = 0; i < lines.length && drawLine < maxLines; i++) {
+    let line = lines[i];
+    // Word wrap
+    while (line.length > 0 && drawLine < maxLines) {
+      let fit = line;
+      while (_ctx.measureText(fit).width > maxW && fit.length > 1) {
+        fit = fit.slice(0, -1);
+      }
+      if (fit.length < line.length) {
+        // Find last space for word break
+        const lastSpace = fit.lastIndexOf(' ');
+        if (lastSpace > 0) fit = fit.slice(0, lastSpace);
+      }
+      // Bold first line
+      if (drawLine === 0) _ctx.font = `bold ${fontSize}px system-ui`;
+      else if (drawLine === 1) _ctx.font = `${fontSize}px system-ui`;
+
+      _ctx.fillText(fit, sx + pad, sy + pad + (drawLine + 1) * lineH);
+      line = line.slice(fit.length).trimStart();
+      drawLine++;
+    }
+  }
+
+  // Fade at bottom if content overflows
+  if (drawLine >= maxLines && lines.length > maxLines) {
+    const fadeH = lineH * 2;
+    const grad = _ctx.createLinearGradient(sx, sy + sh - fadeH, sx, sy + sh);
+    grad.addColorStop(0, note.color + '00');
+    grad.addColorStop(1, note.color);
+    _ctx.fillStyle = grad;
+    _ctx.fillRect(sx, sy + sh - fadeH, sw, fadeH);
+  }
+}
+
+// ── Workspace Edges Renderer ────────────────────────────────
+
+function drawWorkspaceEdges(_W: number, _H: number): void {
+  for (const edge of state.workspaceEdges) {
+    const source = findItemPosition(edge.sourceId);
+    const target = findItemPosition(edge.targetId);
+    if (!source || !target) continue;
+
+    const s = worldToScreen(source.x, source.y, _canvas);
+    const t = worldToScreen(target.x, target.y, _canvas);
+
+    const isSelected = state.selectedEdge === edge;
+
+    // Bezier control points (perpendicular offset at midpoint)
+    const mx = (s.x + t.x) / 2;
+    const my = (s.y + t.y) / 2;
+    const dx = t.x - s.x;
+    const dy = t.y - s.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const offset = Math.min(dist * 0.15, 40);
+    const nx = -dy / (dist || 1);
+    const ny = dx / (dist || 1);
+    const cx = mx + nx * offset;
+    const cy = my + ny * offset;
+
+    // Draw curve
+    _ctx.strokeStyle = isSelected ? '#3b82f6' : 'rgba(255,255,255,0.25)';
+    _ctx.lineWidth = isSelected ? 3 : 1.5;
+    _ctx.beginPath();
+    _ctx.moveTo(s.x, s.y);
+    _ctx.quadraticCurveTo(cx, cy, t.x, t.y);
+    _ctx.stroke();
+
+    // Arrow at target
+    const arrowSize = isSelected ? 10 : 7;
+    const angle = Math.atan2(t.y - cy, t.x - cx);
+    _ctx.fillStyle = isSelected ? '#3b82f6' : 'rgba(255,255,255,0.3)';
+    _ctx.beginPath();
+    _ctx.moveTo(t.x, t.y);
+    _ctx.lineTo(t.x - arrowSize * Math.cos(angle - 0.35), t.y - arrowSize * Math.sin(angle - 0.35));
+    _ctx.lineTo(t.x - arrowSize * Math.cos(angle + 0.35), t.y - arrowSize * Math.sin(angle + 0.35));
+    _ctx.closePath();
+    _ctx.fill();
+
+    // Label at midpoint
+    if (edge.label && dist > 60) {
+      const fontSize = clamp(Math.round(12 * camera.zoom), 6, 14);
+      _ctx.font = `${fontSize}px system-ui`;
+      _ctx.fillStyle = isSelected ? '#93c5fd' : 'rgba(255,255,255,0.4)';
+      _ctx.textAlign = 'center';
+      _ctx.fillText(edge.label, cx, cy - 6);
+    }
+  }
+}
+
+/** Find screen position of a node or note by ID */
+function findItemPosition(id: string): { x: number; y: number } | null {
+  // Check nodes
+  const node = findNode(state.roots, id);
+  if (node) return { x: node.x, y: node.y };
+
+  // Check notes
+  const note = state.workspaceNotes.find(n => n.id === id);
+  if (note) return { x: note.x + note.width / 2, y: note.y + note.height / 2 };
+
+  return null;
+}
+
+// ── Connection Mode Visual ──────────────────────────────────
+
+function drawConnectionModeLine(_W: number, _H: number): void {
+  if (!state.connectionMode) return;
+
+  const source = findItemPosition(state.connectionMode.sourceId);
+  if (!source) return;
+
+  const s = worldToScreen(source.x, source.y, _canvas);
+  const mx = state.dragNoteOffsetX || _W / 2; // reuse for cursor screen pos
+  const my = state.dragNoteOffsetY || _H / 2;
+
+  // Use mouse world position
+  const t = worldToScreen(
+    (window as any).__portalMouseWorldX ?? source.x,
+    (window as any).__portalMouseWorldY ?? source.y,
+    _canvas
+  );
+
+  _ctx.strokeStyle = '#3b82f6';
+  _ctx.lineWidth = 2;
+  _ctx.setLineDash([6, 4]);
+  _ctx.beginPath();
+  _ctx.moveTo(s.x, s.y);
+  _ctx.lineTo(t.x, t.y);
+  _ctx.stroke();
+  _ctx.setLineDash([]);
+
+  // Source indicator
+  _ctx.fillStyle = '#3b82f6';
+  _ctx.beginPath();
+  _ctx.arc(s.x, s.y, 5, 0, Math.PI * 2);
+  _ctx.fill();
 }
 
 // ── Utility ──────────────────────────────────────────────────

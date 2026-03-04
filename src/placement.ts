@@ -114,6 +114,7 @@ export function placeChildrenInWorld(parent: SceneNode, apiChildren: any[]): Sce
       childCount: 0,
       loadState: 'loaded',
       sourcePath: item.source_path,
+      isPinned: !!(item.pinned),
     });
   }
 
@@ -145,6 +146,7 @@ export function placeChildrenInWorld(parent: SceneNode, apiChildren: any[]): Sce
       childCount: item.child_count || 0,
       loadState: 'unloaded',
       latestModified: item.latest_child_modified,
+      isPinned: !!(item.pinned),
     });
   }
 

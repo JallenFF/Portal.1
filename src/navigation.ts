@@ -7,7 +7,7 @@
 // ============================================================
 
 import { state, camera } from './state';
-import { openFile as apiOpenFile, togglePin as apiTogglePin } from './api';
+import { openFile as apiOpenFile, togglePin as apiTogglePin, fetchWorkspaceNotes, fetchWorkspaceEdges } from './api';
 import { requestLoad } from './lazy-loader';
 import { findNode } from './scene-graph';
 import type { SceneNode } from './scene-graph';
@@ -82,8 +82,20 @@ export function enterProject(node: SceneNode, canvasHeight: number): void {
     requestLoad(node);
   }
 
+  // Load workspace data (notes + edges)
+  loadWorkspaceData(node.id);
+
   _onEnterProject();
   _onNavigate();
+}
+
+async function loadWorkspaceData(projectId: string): Promise<void> {
+  const [notes, edges] = await Promise.all([
+    fetchWorkspaceNotes(projectId),
+    fetchWorkspaceEdges(projectId),
+  ]);
+  state.workspaceNotes = notes;
+  state.workspaceEdges = edges;
 }
 
 // ── Exit Project Workspace ───────────────────────────────────
@@ -97,6 +109,15 @@ export function exitProject(): void {
   state.activeProject = null;
   state.selectedNode = null;
   state.dragNode = null;
+  state.selectedNote = null;
+  state.selectedEdge = null;
+  state.editingNote = null;
+  state.dragNote = null;
+  state.resizingNote = null;
+  state.connectionMode = null;
+  state.contextMenu = null;
+  state.workspaceNotes = [];
+  state.workspaceEdges = [];
 
   // Pull back to galaxy overview
   camera.targetX = 0;
