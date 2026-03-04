@@ -12,12 +12,15 @@
     "declarationMap": true,
     "sourceMap": true,
     "outDir": "./dist",
-    "rootDir": "./src"
+    "baseUrl": ".",
+    "paths": {
+      "@core/*": ["packages/core/src/*"],
+      "@layouts/*": ["packages/layouts/src/*"],
+      "@physics/*": ["packages/physics/src/*"]
+    }
   },
-  "references": [
-    { "path": "./packages/core" },
-    { "path": "./packages/layouts" },
-    { "path": "./packages/physics" },
-    { "path": "./packages/triage" }
+  "include": [
+    "src/**/*.ts",
+    "packages/*/src/**/*.ts"
   ]
 }

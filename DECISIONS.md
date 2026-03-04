@@ -183,10 +183,42 @@ Every significant design decision is recorded here. Each entry states what was d
 **Why:** Fast, good TypeScript support, schema validation built in.
 **Reopens if:** Fastify causes problems with Tauri's process spawning or bundling. Alternative: Hono (lighter weight).
 
-### D-062: HTML5 Canvas renderer [SOFT → REVISIT @ v0.8.0]
+### D-062: HTML5 Canvas renderer [SOFT → REVISIT @ v0.11.0]
 **Decision:** Canvas 2D for now. WebGL is future.
 **Why:** Simpler to get working. Canvas handles hundreds of nodes fine. WebGL needed for thousands.
 **Reopens if:** Performance issues with 200+ visible nodes. That's the migration trigger.
+
+---
+
+## Frontend Architecture (v0.5.0+)
+
+### D-070: Callback injection for circular dependency breaking [LOCKED]
+**Decision:** Navigation and HUD modules avoid circular imports by injecting callbacks at init time rather than importing each other.
+**Why:** navigation.ts needs to update HUD (breadcrumb), HUD needs to call navigation (click ancestor). Direct imports create a cycle.
+**Rejected:** Barrel re-exports (still circular), event bus (over-engineered for two modules).
+**Reopens if:** Never. This pattern works and is minimal.
+
+---
+
+## Scene Graph (v0.6.0)
+
+### D-073: Unified scene graph replaces binary state machine [LOCKED]
+**Decision:** A single `SceneNode` tree replaces the separate galaxy-view / solar-system-view state machine. Projects, folders, and files are all SceneNodes.
+**Why:** Eliminates coordinate resets on enter/exit. Enables infinite nesting. One render pass instead of two code paths.
+**Rejected:** Dual-mode state machine (worked but created coordinate discontinuities and couldn't handle folders-within-folders).
+**Reopens if:** Never. The scene graph is strictly superior.
+
+### D-074: World-unit coordinate system [LOCKED]
+**Decision:** All positions are in world units. Camera transform converts to screen pixels. No screen-pixel placement logic.
+**Why:** Consistent at all zoom levels. Children placed relative to parent center/radius. No recalculation on zoom.
+**Rejected:** Screen-pixel placement with per-zoom recalculation (fragile, breaks when parent moves).
+**Reopens if:** Never.
+
+### D-075: Lazy loading, no prefetching [SOFT]
+**Decision:** Children are fetched from the hub API only when a node's screen-space radius exceeds 40px. Results cached in the scene graph.
+**Why:** Zero upfront data cost. Infinite depth is free. Only loads what the user is looking at.
+**Rejected:** Prefetch adjacent levels (wastes bandwidth for deep trees), load-all-at-boot (doesn't scale).
+**Reopens if:** Latency on load is noticeable. Mitigation: prefetch one level ahead for selected node, not global prefetch.
 
 ---
 

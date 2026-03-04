@@ -1,6 +1,6 @@
 // ============================================================
-// Portal v0.4.2 — Solar System Model
-// Parent = sun (center), files orbit by recency, folders = outer boundary
+// Portal v0.5.0 — Heat-Driven Solar System
+// Click-to-select, zoom-to-enter, heat controls orbit radius
 // ============================================================
 
 const HUB = '/api';
@@ -27,6 +27,8 @@ const state = {
   focusedProject: -1,
   focusedNode: null,
   hoveredItem: -1,
+  selectedItem: -1,        // NEW: clicked/locked-on item index
+  selectedType: null,       // 'sphere' | 'child'
   currentChildren: [],
   spheres: [],
   navStack: [],
@@ -35,8 +37,12 @@ const state = {
   layout: 'orbit',
   showSettings: false,
   settings: {},
-  sunLabel: '',          // name of current context (project or folder)
+  sunLabel: '',
 };
+
+// Zoom thresholds for enter/exit
+const ZOOM_ENTER_THRESHOLD = 2.5;   // zoom past this while selected → enter
+const ZOOM_EXIT_THRESHOLD = 0.4;    // zoom below this → go back
 
 const defaultSettings = {
   'orbit.inner_hours': '48',
@@ -46,6 +52,7 @@ const defaultSettings = {
   'orbit.weekend_extend': 'false',
   'orbit.weekend_hours': '72',
   'galaxy.project_orbit_days': '30',
+  'heat.glow_enabled': 'false',
 };
 
 // ── Colors ──────────────────────────────────────────────────
@@ -92,81 +99,92 @@ function worldToScreen(wx, wy) {
   };
 }
 
-// ── Recency Score ───────────────────────────────────────────
-// Returns 0..1 where 1 = just modified, 0 = very old
-// Used for: proximity to center, brightness, size
+// ── Heat → Orbit Placement ──────────────────────────────────
+// Heat score (0–100) determines orbit radius.
+// Tier bands: active (75–100), reference (50–74), dormant (25–49), cold (0–24)
 
-function recencyScore(fileModified) {
-  if (!fileModified) return 0;
-  const now = Date.now();
-  const modified = new Date(fileModified).getTime();
-  const hoursAgo = (now - modified) / (1000 * 60 * 60);
+function heatToRadius(heatScore, fileZoneR) {
+  const minR = 55;
+  const score = heatScore ?? 0;
 
-  const innerHours = parseFloat(state.settings['orbit.inner_hours'] || '48');
-  const outerWeeks = parseFloat(state.settings['orbit.outer_weeks'] || '3');
-  const maxHours = outerWeeks * 7 * 24;
-
-  // Weekend extension
-  if (state.settings['orbit.weekend_extend'] === 'true') {
-    const day = new Date().getDay();
-    if (day === 0 || day === 6) {
-      const weekendHours = parseFloat(state.settings['orbit.weekend_hours'] || '72');
-      if (hoursAgo < weekendHours) return 1.0;
-    }
+  // Higher heat = smaller radius (closer to sun)
+  // t=1 at top of band (closest to sun), t=0 at bottom (farthest in band)
+  if (score >= 75) {
+    // Active: inner band (minR → fileZoneR*0.28)
+    const t = (score - 75) / 25; // 0 at 75, 1 at 100
+    const bandOuter = fileZoneR * 0.28;
+    return bandOuter - t * (bandOuter - minR); // 100→minR, 75→bandOuter
+  } else if (score >= 50) {
+    // Reference: mid band (fileZoneR*0.28 → fileZoneR*0.50)
+    const t = (score - 50) / 25;
+    const bandInner = fileZoneR * 0.28;
+    const bandOuter = fileZoneR * 0.50;
+    return bandOuter - t * (bandOuter - bandInner); // 74→bandInner, 50→bandOuter
+  } else if (score >= 25) {
+    // Dormant: outer band (fileZoneR*0.50 → fileZoneR*0.75)
+    const t = (score - 25) / 25;
+    const bandInner = fileZoneR * 0.50;
+    const bandOuter = fileZoneR * 0.75;
+    return bandOuter - t * (bandOuter - bandInner);
+  } else {
+    // Cold: compressed cluster at fileZoneR*0.80–0.90
+    // Lower score = slightly farther (but all clustered together)
+    const t = score / 25; // 0 at 0, 1 at 24
+    return fileZoneR * 0.90 - t * (fileZoneR * 0.10);
   }
-
-  if (hoursAgo < innerHours) return 1.0;
-  if (hoursAgo > maxHours) return 0.0;
-  // Smooth falloff between inner and max
-  return 1.0 - (hoursAgo - innerHours) / (maxHours - innerHours);
 }
 
-// ── Solar System Placement ──────────────────────────────────
-// Files orbit around center (the sun). Closer = more recent.
-// Folders form the outer boundary ring.
+// Fallback: if heat_score is null/undefined, derive a rough score from mtime
+function mtimeFallbackScore(fileModified) {
+  if (!fileModified) return 10;
+  const hoursAgo = (Date.now() - new Date(fileModified).getTime()) / (1000 * 60 * 60);
+  if (hoursAgo < 48) return 85;
+  if (hoursAgo < 168) return 65;   // 1 week
+  if (hoursAgo < 720) return 40;   // 30 days
+  return 15;
+}
+
+// ── Solar System Placement (Heat-Driven) ────────────────────
 
 function placeChildren(children) {
   const folders = children.filter(c => c.is_folder);
   const files = children.filter(c => !c.is_folder);
 
-  // Viewport-fitted: everything should be visible at default zoom
   const screenR = Math.min(canvas.width, canvas.height) * 0.42;
-
-  const fileZoneR = screenR * 0.60;   // files spread across inner 60%
-  const folderRingR = screenR * 0.75;  // folders closer, tighter orbit
+  const fileZoneR = screenR * 0.60;
+  const folderRingR = screenR * 0.75;
 
   const placed = [];
 
-  // ── Place files by relative recency (center = most recent in this set) ──
-  // Sort by modified date descending (most recent first)
+  // Sort files by heat score descending (hottest first)
   const sortedFiles = [...files].sort((a, b) => {
-    const ta = new Date(a.meta_modified || a.file_modified || 0).getTime();
-    const tb = new Date(b.meta_modified || b.file_modified || 0).getTime();
-    return tb - ta;
+    const ha = a.heat_score ?? mtimeFallbackScore(a.meta_modified || a.file_modified);
+    const hb = b.heat_score ?? mtimeFallbackScore(b.meta_modified || b.file_modified);
+    return hb - ha;
   });
 
   const fileCount = sortedFiles.length;
 
   for (let i = 0; i < fileCount; i++) {
     const item = sortedFiles[i];
+    const heat = item.heat_score ?? mtimeFallbackScore(item.meta_modified || item.file_modified);
+    const tier = item.heat_tier || (heat >= 75 ? 'active' : heat >= 50 ? 'reference' : heat >= 25 ? 'dormant' : 'cold');
 
-    // Relative rank: 0 = most recent, 1 = oldest in this set
-    const rank = fileCount > 1 ? i / (fileCount - 1) : 0;
+    // Heat → radius
+    const r = heatToRadius(heat, fileZoneR);
 
-    // Radial distance: rank 0 = close to sun, rank 1 = edge of file zone
-    // Cubic curve packs most files near the sun, only oldest push outward
-    const minR = 60;
-    const r = minR + Math.pow(rank, 2.5) * (fileZoneR - minR);
-
-    // Angle: spread evenly with slight hash jitter
+    // Angle: spread evenly with hash jitter
     const angleBase = (2 * Math.PI * i) / Math.max(fileCount, 1);
     const jitter = ((hashCode(item.id) % 1000) / 1000 - 0.5) * 0.3;
     const angle = angleBase + jitter;
 
-    // Size: most recent = larger
-    const score = 1 - rank;
+    // Size: subtle heat scaling
+    const heatNorm = heat / 100;
     const baseR = 6;
-    const sizeBoost = score * 5;
+    const sizeBoost = heatNorm * 5;  // active ≈ +5, cold ≈ +0
+
+    // Opacity: heat-driven (0.45 → 1.0)
+    const opacity = 0.45 + heatNorm * 0.55;
 
     placed.push({
       ...item,
@@ -177,15 +195,16 @@ function placeChildren(children) {
       ext: (item.vault_ext || item.type || 'file').toLowerCase(),
       displayLabel: item.label,
       childCount: 0,
-      recency: score,
+      heat: heat,
+      heatTier: tier,
+      opacity: opacity,
     });
   }
 
-  // ── Place folders on outer boundary ring ──
+  // Folders on outer boundary ring (unchanged)
   for (let i = 0; i < folders.length; i++) {
     const item = folders[i];
     const angle = (2 * Math.PI * i) / Math.max(folders.length, 1);
-    // Slight radial jitter
     const jitter = ((hashCode(item.id + 'fr') % 20) - 10);
 
     placed.push({
@@ -197,7 +216,9 @@ function placeChildren(children) {
       ext: 'folder',
       displayLabel: item.label,
       childCount: item.child_count || 0,
-      recency: 0,
+      heat: 0,
+      heatTier: 'cold',
+      opacity: 1.0,
     });
   }
 
@@ -229,7 +250,9 @@ function placeChildrenGrid(children) {
       ext: isFolder ? 'folder' : (item.vault_ext || item.type || 'file').toLowerCase(),
       displayLabel: item.label,
       childCount: item.child_count || 0,
-      recency: 0,
+      heat: item.heat_score ?? 0,
+      heatTier: item.heat_tier || 'cold',
+      opacity: 1.0,
     };
   });
 }
@@ -301,7 +324,21 @@ async function openFile(nodeId) {
       body: JSON.stringify({ nodeId }),
     })).json();
     if (data.error) console.error('Open failed:', data.error);
+    else {
+      // Re-fetch children after open to get updated heat scores (debounced)
+      clearTimeout(openFile._refreshTimer);
+      openFile._refreshTimer = setTimeout(() => refreshCurrentLevel(), 2000);
+    }
   } catch (e) { console.error('Open failed:', e); }
+}
+openFile._refreshTimer = null;
+
+async function togglePin(nodeId) {
+  try {
+    const data = await (await fetch(`${HUB}/nodes/${nodeId}/pin`, { method: 'PUT' })).json();
+    if (data.ok) refreshCurrentLevel();
+    return data;
+  } catch (e) { console.error('Pin toggle failed:', e); }
 }
 
 // ── Initialize ──────────────────────────────────────────────
@@ -333,6 +370,8 @@ async function enterProject(idx) {
   state.focusedNode = null;
   state.sunLabel = s.name;
   state.navStack = [{ id: s.id, name: s.name, type: 'project' }];
+  state.selectedItem = -1;
+  state.selectedType = null;
 
   const children = await fetchProjectChildren(s.id);
   state.currentChildren = state.layout === 'grid' ? placeChildrenGrid(children) : placeChildren(children);
@@ -347,6 +386,8 @@ async function enterFolder(item) {
   state.focusedNode = item.id;
   state.sunLabel = item.displayLabel;
   state.navStack.push({ id: item.id, name: item.displayLabel, type: 'folder' });
+  state.selectedItem = -1;
+  state.selectedType = null;
 
   const children = await fetchNodeChildren(item.id);
   state.currentChildren = state.layout === 'grid' ? placeChildrenGrid(children) : placeChildren(children);
@@ -358,6 +399,9 @@ async function enterFolder(item) {
 }
 
 async function goBack() {
+  state.selectedItem = -1;
+  state.selectedType = null;
+
   if (state.navStack.length <= 1) {
     state.focusedProject = -1;
     state.focusedNode = null;
@@ -402,20 +446,70 @@ async function refreshCurrentLevel() {
   state.currentChildren = state.layout === 'grid' ? placeChildrenGrid(children) : placeChildren(children);
 }
 
+// ── Selection: click to lock on ─────────────────────────────
+
+function selectSphere(idx) {
+  state.selectedItem = idx;
+  state.selectedType = 'sphere';
+  const s = state.spheres[idx];
+  // Smoothly center camera on the selected sphere
+  camera.targetX = s.x;
+  camera.targetY = s.y;
+}
+
+function selectChild(idx) {
+  state.selectedItem = idx;
+  state.selectedType = 'child';
+  const c = state.currentChildren[idx];
+  camera.targetX = c.x;
+  camera.targetY = c.y;
+}
+
+function clearSelection() {
+  state.selectedItem = -1;
+  state.selectedType = null;
+}
+
 // ── Zoom Handler ────────────────────────────────────────────
+
+let zoomEnterPending = false;
 
 window.addEventListener('wheel', (e) => {
   e.preventDefault();
 
-  // Scroll out far enough → go back
-  if (state.focusedProject >= 0 && e.deltaY > 0 && camera.targetZoom <= 0.5) {
+  const zoomFactor = e.deltaY > 0 ? 0.90 : 1.12;
+  const newZoom = clamp(camera.targetZoom * zoomFactor, 0.15, 10.0);
+
+  // Zoom-to-enter: if something is selected and we're zooming IN past threshold
+  if (e.deltaY < 0 && state.selectedItem >= 0 && !zoomEnterPending) {
+    if (newZoom > ZOOM_ENTER_THRESHOLD) {
+      zoomEnterPending = true;
+      if (state.focusedProject < 0 && state.selectedType === 'sphere') {
+        // Galaxy → enter project
+        enterProject(state.selectedItem).then(() => { zoomEnterPending = false; });
+        return;
+      } else if (state.focusedProject >= 0 && state.selectedType === 'child') {
+        const c = state.currentChildren[state.selectedItem];
+        if (c && c.isFolder) {
+          enterFolder(c).then(() => { zoomEnterPending = false; });
+          return;
+        } else if (c && !c.isFolder) {
+          openFile(c.id);
+          zoomEnterPending = false;
+          return;
+        }
+      }
+      zoomEnterPending = false;
+    }
+  }
+
+  // Zoom-to-exit: scrolling OUT past threshold while inside
+  if (state.focusedProject >= 0 && e.deltaY > 0 && newZoom <= ZOOM_EXIT_THRESHOLD) {
     goBack();
     return;
   }
 
-  const zoomFactor = e.deltaY > 0 ? 0.90 : 1.12;
-  const newZoom = clamp(camera.targetZoom * zoomFactor, 0.15, 10.0);
-
+  // Normal zoom with cursor-centered adjustment
   const world = screenToWorld(e.clientX, e.clientY);
   const ratio = 1 - newZoom / camera.targetZoom;
   camera.targetX += (world.x - camera.x) * ratio;
@@ -467,9 +561,40 @@ window.addEventListener('mousemove', (e) => {
   }
 });
 
-window.addEventListener('mouseup', () => { mouse.down = false; });
+window.addEventListener('mouseup', (e) => {
+  const dragDist = Math.sqrt((e.clientX - mouse.startX) ** 2 + (e.clientY - mouse.startY) ** 2);
+  mouse.down = false;
 
-// Double-click: enter or open
+  // Single click (not a drag) → select
+  if (dragDist < 5) {
+    const world = screenToWorld(e.clientX, e.clientY);
+
+    if (state.focusedProject >= 0) {
+      let hit = -1;
+      for (let i = 0; i < state.currentChildren.length; i++) {
+        const c = state.currentChildren[i];
+        if (distPt(world, c) < c.radius + 6) { hit = i; break; }
+      }
+      if (hit >= 0) {
+        selectChild(hit);
+      } else {
+        clearSelection();
+      }
+    } else {
+      let hit = -1;
+      for (let i = 0; i < state.spheres.length; i++) {
+        if (distPt(world, state.spheres[i]) < state.spheres[i].radius) { hit = i; break; }
+      }
+      if (hit >= 0) {
+        selectSphere(hit);
+      } else {
+        clearSelection();
+      }
+    }
+  }
+});
+
+// Double-click: instant enter/open (shortcut)
 canvas.addEventListener('dblclick', (e) => {
   const world = screenToWorld(e.clientX, e.clientY);
 
@@ -498,6 +623,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'l' || e.key === 'L') { state.locked = !state.locked; updateHUD(); }
   if (e.key === 'Escape') {
     if (state.showSettings) { state.showSettings = false; settingsPanel.style.display = 'none'; }
+    else if (state.selectedItem >= 0) { clearSelection(); }
     else if (state.focusedProject >= 0) goBack();
   }
   if (e.key === 'g' || e.key === 'G') {
@@ -510,6 +636,11 @@ window.addEventListener('keydown', (e) => {
     state.showSettings = !state.showSettings;
     settingsPanel.style.display = state.showSettings ? 'block' : 'none';
     if (state.showSettings) renderSettingsPanel();
+  }
+  // P key: toggle pin on selected file
+  if ((e.key === 'p' || e.key === 'P') && state.selectedItem >= 0 && state.selectedType === 'child') {
+    const c = state.currentChildren[state.selectedItem];
+    if (c && !c.isFolder) togglePin(c.id);
   }
 });
 
@@ -538,9 +669,9 @@ function updateHUD() {
   if (state.focusedProject >= 0) {
     const count = state.currentChildren.length;
     const fCount = state.currentChildren.filter(c => c.isFolder).length;
-    hudHint.textContent = `${fCount} folders · ${count - fCount} files · dbl-click = enter/open · Esc/scroll out = back · G = ${state.layout === 'orbit' ? 'grid' : 'orbit'}`;
+    hudHint.textContent = `${fCount} folders · ${count - fCount} files · click = select · scroll = zoom in/out · dbl-click = enter · P = pin · G = ${state.layout === 'orbit' ? 'grid' : 'orbit'}`;
   } else {
-    hudHint.textContent = 'scroll = zoom · drag = pan · dbl-click = enter · Ctrl+S = settings';
+    hudHint.textContent = 'click = select · scroll = zoom in/out · dbl-click = enter · Ctrl+S = settings';
   }
 
   hudLock.textContent = state.locked ? '🔒' : '🔓';
@@ -566,6 +697,8 @@ document.addEventListener('click', (e) => {
     state.navStack = [];
     state.currentChildren = [];
     state.sunLabel = '';
+    state.selectedItem = -1;
+    state.selectedType = null;
     camera.targetZoom = 0.5;
     camera.targetX = 0;
     camera.targetY = 0;
@@ -597,13 +730,15 @@ document.addEventListener('click', (e) => {
 function renderSettingsPanel() {
   const s = state.settings;
   settingsPanel.innerHTML = `
-    <div class="settings-title">⚙ Orbit Settings</div>
+    <div class="settings-title">⚙ Heat Settings</div>
+    <label><input type="checkbox" id="s-glow" ${s['heat.glow_enabled'] === 'true' ? 'checked' : ''}> Enable glow for active files</label>
+
+    <div class="settings-title" style="margin-top:12px">Orbit (legacy / fallback)</div>
     <label>Inner orbit (hours): <input type="number" id="s-inner" value="${s['orbit.inner_hours'] || 48}" min="1" max="168"></label>
-    <label>Mid-1 (days): <input type="number" id="s-mid1" value="${s['orbit.mid1_days'] || 4}" min="1" max="30"></label>
-    <label>Mid-2 (weeks): <input type="number" id="s-mid2" value="${s['orbit.mid2_weeks'] || 2}" min="1" max="12"></label>
     <label>Outer (weeks): <input type="number" id="s-outer" value="${s['orbit.outer_weeks'] || 3}" min="1" max="52"></label>
     <label><input type="checkbox" id="s-weekend" ${s['orbit.weekend_extend'] === 'true' ? 'checked' : ''}> Weekend extend</label>
     <label>Weekend hours: <input type="number" id="s-weekend-hrs" value="${s['orbit.weekend_hours'] || 72}" min="1" max="168"></label>
+
     <div class="settings-title" style="margin-top:12px">Galaxy</div>
     <label>Project orbit (days): <input type="number" id="s-galaxy" value="${s['galaxy.project_orbit_days'] || 30}" min="7" max="365"></label>
     <button id="s-apply">Apply</button>
@@ -611,9 +746,8 @@ function renderSettingsPanel() {
   `;
 
   document.getElementById('s-apply').addEventListener('click', async () => {
+    await updateSetting('heat.glow_enabled', document.getElementById('s-glow').checked ? 'true' : 'false');
     await updateSetting('orbit.inner_hours', document.getElementById('s-inner').value);
-    await updateSetting('orbit.mid1_days', document.getElementById('s-mid1').value);
-    await updateSetting('orbit.mid2_weeks', document.getElementById('s-mid2').value);
     await updateSetting('orbit.outer_weeks', document.getElementById('s-outer').value);
     await updateSetting('orbit.weekend_extend', document.getElementById('s-weekend').checked ? 'true' : 'false');
     await updateSetting('orbit.weekend_hours', document.getElementById('s-weekend-hrs').value);
@@ -664,8 +798,7 @@ function render() {
   if (state.focusedProject >= 0) {
     const origin = worldToScreen(0, 0);
 
-    // ── Sun: the current context ──
-    // Glowing orb at center with label
+    // Sun glow
     const sunR = 18 * camera.zoom;
     const sunGrad = ctx.createRadialGradient(origin.x, origin.y, 0, origin.x, origin.y, sunR * 2.5);
     sunGrad.addColorStop(0, 'rgba(245,158,11,0.25)');
@@ -693,27 +826,43 @@ function render() {
     ctx.textAlign = 'center';
     ctx.fillText(state.sunLabel, origin.x, origin.y + sunR + 18 * camera.zoom);
 
-    // Subtle orbit guide rings
+    // Heat tier guide rings (orbit mode only)
     if (state.layout === 'orbit') {
-      ctx.strokeStyle = 'rgba(255,255,255,0.025)';
+      const guideR = Math.min(W, H) * 0.42 * 0.60; // fileZoneR equivalent
       ctx.lineWidth = 1;
-      const guideR = Math.min(W, H) * 0.42;
-      for (const frac of [0.2, 0.4, 0.6]) {
-        ctx.beginPath();
-        ctx.arc(origin.x, origin.y, guideR * frac, 0, Math.PI * 2);
-        ctx.stroke();
-      }
+
+      // Active/Reference boundary
+      ctx.strokeStyle = 'rgba(245,158,11,0.04)';
+      ctx.beginPath();
+      ctx.arc(origin.x, origin.y, guideR * 0.28, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Reference/Dormant boundary
+      ctx.strokeStyle = 'rgba(255,255,255,0.025)';
+      ctx.beginPath();
+      ctx.arc(origin.x, origin.y, guideR * 0.50, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Dormant/Cold boundary
+      ctx.strokeStyle = 'rgba(255,255,255,0.02)';
+      ctx.beginPath();
+      ctx.arc(origin.x, origin.y, guideR * 0.75, 0, Math.PI * 2);
+      ctx.stroke();
+
       // Folder boundary ring
+      const folderR = Math.min(W, H) * 0.42 * 0.75;
       ctx.strokeStyle = 'rgba(245,158,11,0.04)';
       ctx.setLineDash([4, 8]);
       ctx.beginPath();
-      ctx.arc(origin.x, origin.y, guideR * 0.75, 0, Math.PI * 2);
+      ctx.arc(origin.x, origin.y, folderR, 0, Math.PI * 2);
       ctx.stroke();
       ctx.setLineDash([]);
     }
 
     // ── Draw children ──
     const children = state.currentChildren;
+    const glowEnabled = state.settings['heat.glow_enabled'] === 'true';
+
     for (let i = 0; i < children.length; i++) {
       const c = children[i];
       const sc = worldToScreen(c.x, c.y);
@@ -723,18 +872,18 @@ function render() {
 
       const sr = c.radius * camera.zoom;
       const isHovered = state.hoveredItem === i;
+      const isSelected = state.selectedItem === i && state.selectedType === 'child';
       const ec = EXT_COLORS[c.ext] || '#6B7280';
 
       if (c.isFolder) {
         // ── Folder: boundary sphere ──
-        const alpha = isHovered ? 0.5 : 0.2;
-        ctx.fillStyle = ec + (isHovered ? '40' : '18');
+        ctx.fillStyle = ec + (isHovered || isSelected ? '40' : '18');
         ctx.beginPath();
         ctx.arc(sc.x, sc.y, sr, 0, Math.PI * 2);
         ctx.fill();
 
-        ctx.strokeStyle = ec + (isHovered ? 'CC' : '50');
-        ctx.lineWidth = isHovered ? 2 : 1.5;
+        ctx.strokeStyle = ec + (isSelected ? 'FF' : isHovered ? 'CC' : '50');
+        ctx.lineWidth = isSelected ? 2.5 : isHovered ? 2 : 1.5;
         ctx.beginPath();
         ctx.arc(sc.x, sc.y, sr, 0, Math.PI * 2);
         ctx.stroke();
@@ -747,90 +896,97 @@ function render() {
           ctx.fillText(`${c.childCount}`, sc.x, sc.y + 4);
         }
 
-        // Folder label (always visible)
+        // Folder label
         const fontSize = clamp(Math.round(11 * camera.zoom), 8, 16);
         ctx.font = `${fontSize}px system-ui`;
         ctx.textAlign = 'center';
         let name = c.displayLabel;
-        if (name.length > 20 && !isHovered) name = name.slice(0, 17) + '…';
+        if (name.length > 20 && !isHovered && !isSelected) name = name.slice(0, 17) + '…';
 
-        // Dark pill background
         const tw = ctx.measureText(name).width + 10;
         const lx = sc.x, ly = sc.y + sr + fontSize + 4;
         ctx.fillStyle = 'rgba(8,8,10,0.75)';
         roundRect(ctx, lx - tw / 2, ly - fontSize + 2, tw, fontSize + 4, 3);
         ctx.fill();
-        ctx.fillStyle = isHovered ? '#fff' : 'rgba(255,255,255,0.65)';
+        ctx.fillStyle = isSelected ? '#fff' : isHovered ? '#fff' : 'rgba(255,255,255,0.65)';
         ctx.fillText(name, lx, ly + 2);
 
       } else {
-        // ── File: orbiting body ──
-        // Brightness based on recency
-        const brightness = 0.5 + (c.recency || 0) * 0.5;
-        const hexAlpha = Math.round(brightness * 255).toString(16).padStart(2, '0');
+        // ── File: orbiting body — heat-driven ──
+        const hexAlpha = Math.round(c.opacity * 255).toString(16).padStart(2, '0');
 
         ctx.fillStyle = ec + hexAlpha;
         ctx.beginPath();
         ctx.arc(sc.x, sc.y, sr, 0, Math.PI * 2);
         ctx.fill();
 
-        // Glow for very recent files
-        if ((c.recency || 0) > 0.8) {
-          ctx.strokeStyle = ec + '30';
+        // Glow for active tier (if enabled in settings)
+        if (glowEnabled && c.heatTier === 'active') {
+          ctx.strokeStyle = ec + '25';
           ctx.lineWidth = 2;
           ctx.beginPath();
           ctx.arc(sc.x, sc.y, sr + 3, 0, Math.PI * 2);
           ctx.stroke();
         }
 
-        ctx.strokeStyle = ec + (isHovered ? 'CC' : '40');
+        // Selection ring
+        if (isSelected) {
+          ctx.strokeStyle = '#FFFFFF90';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(sc.x, sc.y, sr + 5, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        ctx.strokeStyle = ec + (isSelected ? 'CC' : isHovered ? 'CC' : '40');
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.arc(sc.x, sc.y, sr, 0, Math.PI * 2);
         ctx.stroke();
 
-        // Ext badge (always show when zoom > 0.7)
-        if (camera.zoom > 0.7 || isHovered) {
+        // Ext badge
+        if (camera.zoom > 0.7 || isHovered || isSelected) {
           ctx.fillStyle = ec;
           ctx.font = `bold ${Math.max(7, Math.round(7 * camera.zoom))}px system-ui`;
           ctx.textAlign = 'center';
           ctx.fillText(c.ext.toUpperCase(), sc.x, sc.y - sr - 4);
         }
 
-        // File label — always visible at default zoom
-        if (camera.zoom > 0.6 || isHovered) {
+        // File label
+        if (camera.zoom > 0.6 || isHovered || isSelected) {
           const fontSize = clamp(Math.round(10 * camera.zoom), 8, 15);
           ctx.font = `${fontSize}px system-ui`;
           let name = c.displayLabel;
-          if (name.length > 22 && !isHovered) name = name.slice(0, 19) + '…';
+          if (name.length > 22 && !isHovered && !isSelected) name = name.slice(0, 19) + '…';
 
           const tw = ctx.measureText(name).width + 10;
           const lx = sc.x, ly = sc.y + sr + fontSize + 3;
           ctx.fillStyle = 'rgba(8,8,10,0.7)';
           roundRect(ctx, lx - tw / 2, ly - fontSize + 2, tw, fontSize + 4, 3);
           ctx.fill();
-          ctx.fillStyle = isHovered ? '#fff' : 'rgba(255,255,255,0.55)';
+          ctx.fillStyle = isSelected ? '#fff' : isHovered ? '#fff' : 'rgba(255,255,255,0.55)';
           ctx.fillText(name, lx, ly + 2);
         }
       }
 
       // ── Hover callout card ──
-      if (isHovered) {
+      if (isHovered || isSelected) {
         const label = c.displayLabel;
         const ext = c.ext.toUpperCase();
         const line1 = label;
         const line2 = c.isFolder ? `${c.childCount} items` : ext;
+        const line3 = c.isFolder ? '' : `Heat: ${Math.round(c.heat)} (${c.heatTier})`;
 
         ctx.font = 'bold 15px system-ui';
         const w1 = ctx.measureText(line1).width;
         ctx.font = '13px system-ui';
         const w2 = ctx.measureText(line2).width;
-        const cardW = Math.max(w1, w2) + 36;
-        const cardH = 56;
+        const w3 = line3 ? ctx.measureText(line3).width : 0;
+        const cardW = Math.max(w1, w2, w3) + 36;
+        const cardH = line3 ? 72 : 56;
         const cardX = sc.x - cardW / 2;
         const cardY = sc.y - sr - cardH - 14;
 
-        // Card background
         ctx.fillStyle = 'rgba(20,20,26,0.95)';
         roundRect(ctx, cardX, cardY, cardW, cardH, 8);
         ctx.fill();
@@ -839,7 +995,6 @@ function render() {
         roundRect(ctx, cardX, cardY, cardW, cardH, 8);
         ctx.stroke();
 
-        // Card text
         ctx.fillStyle = '#fff';
         ctx.font = 'bold 15px system-ui';
         ctx.textAlign = 'center';
@@ -847,6 +1002,11 @@ function render() {
         ctx.fillStyle = ec;
         ctx.font = '13px system-ui';
         ctx.fillText(line2, sc.x, cardY + 44);
+        if (line3) {
+          ctx.fillStyle = 'rgba(255,255,255,0.4)';
+          ctx.font = '11px system-ui';
+          ctx.fillText(line3, sc.x, cardY + 62);
+        }
 
         // Pointer triangle
         ctx.fillStyle = 'rgba(20,20,26,0.95)';
@@ -893,6 +1053,7 @@ function render() {
       const sc = worldToScreen(s.x, s.y);
       const sr = s.radius * camera.zoom;
       const isHovered = state.hoveredItem === i;
+      const isSelected = state.selectedItem === i && state.selectedType === 'sphere';
 
       const grad = ctx.createRadialGradient(sc.x, sc.y, 0, sc.x, sc.y, sr);
       grad.addColorStop(0, s.color + '25');
@@ -903,14 +1064,23 @@ function render() {
       ctx.arc(sc.x, sc.y, sr, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.strokeStyle = isHovered ? s.color + '90' : s.color + '40';
-      ctx.lineWidth = isHovered ? 2 : 1;
+      // Selection ring
+      if (isSelected) {
+        ctx.strokeStyle = s.color + 'AA';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(sc.x, sc.y, sr + 4, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      ctx.strokeStyle = isSelected ? s.color + 'AA' : isHovered ? s.color + '90' : s.color + '40';
+      ctx.lineWidth = isSelected ? 2 : isHovered ? 2 : 1;
       ctx.beginPath();
       ctx.arc(sc.x, sc.y, sr, 0, Math.PI * 2);
       ctx.stroke();
 
       if (sr > 10) {
-        ctx.fillStyle = isHovered ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.7)';
+        ctx.fillStyle = isSelected ? 'rgba(255,255,255,1.0)' : isHovered ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.7)';
         ctx.font = `${clamp(Math.round(11 * camera.zoom), 8, 16)}px system-ui`;
         ctx.textAlign = 'center';
         ctx.fillText(s.name, sc.x, sc.y + sr + 14 * camera.zoom);

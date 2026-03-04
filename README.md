@@ -8,9 +8,19 @@ Portal replaces tab-hopping and folder-diving with a zoomable canvas where proje
 
 ## Version
 
-**v0.1.0-foundation** — Architecture & data model only. No running app yet.
+**v0.6.1-workspace** — Project workspace mode with toolbar, node dragging, and Miro-style interior view.
 
 See [CHANGELOG.md](./CHANGELOG.md) for full history.
+
+---
+
+## Two views
+
+Portal has two zoom levels that serve different purposes:
+
+**Galaxy (macro)** — All projects as spheres on a zoomable canvas. For organizational context: which projects exist, how active they are, how they relate. Semantic zoom reveals detail as you zoom in.
+
+**Workspace (interior)** — Double-click a project to enter its workspace. Files appear as draggable cards with content previews. Toolbar appears at top. This is where deep work happens: arrange files, open them, annotate with sticky notes (planned). Escape returns to galaxy.
 
 ---
 
@@ -18,25 +28,48 @@ See [CHANGELOG.md](./CHANGELOG.md) for full history.
 
 ```
 portal/
+├── src/               ← Frontend modules (15 TypeScript files)
+│   ├── main.ts        ← Boot + workspace toolbar wiring
+│   ├── scene-graph.ts ← SceneNode tree (projects/folders/files)
+│   ├── lazy-loader.ts ← On-demand API fetching
+│   ├── state.ts       ← AppStateV2 (roots[], activeProject, selected, hovered, drag)
+│   ├── placement.ts   ← World-unit positioning, heat-ranked orbit
+│   ├── navigation.ts  ← selectNode, enterProject, exitProject, zoomInto, goUp
+│   ├── input.ts       ← Zoom, pan, node dragging (workspace mode), click detection
+│   ├── renderer.ts    ← Dual-mode: galaxy renderer + workspace renderer
+│   ├── hud.ts         ← Breadcrumb, context-sensitive hints
+│   ├── file-window.ts ← HTML overlay windows for file preview
+│   ├── content-cache.ts ← Text/image preview cache
+│   ├── api.ts         ← Hub API client + position persistence
+│   ├── colors.ts      ← Color utilities
+│   ├── math.ts        ← Math utilities
+│   └── types.ts       ← Camera + Mouse types
 ├── packages/
-│   ├── core/          ← Data model, graph ops, persistence, entropy
+│   ├── core/          ← Data model, graph ops, persistence, heat engine
 │   ├── layouts/       ← Pluggable organization strategies
 │   ├── physics/       ← Force solver, seeding, reusable force primitives
 │   ├── triage/        ← AI-assisted organization (stub)
-│   ├── renderer/      ← Canvas drawing (TODO)
-│   └── hub/           ← Fastify + SQLite server (TODO)
+│   ├── vault/         ← File ingest, hash-based dedup
+│   └── hub/           ← Fastify server + SQLite (sole DB writer)
+├── index.html         ← Canvas + toolbar + HUD
+├── vite.config.js
 ├── CHANGELOG.md
 ├── ROADMAP.md
+├── STATUS.md
+├── DECISIONS.md
+├── COMMANDS.md
 └── README.md
 ```
 
 ### Package dependency graph
 
 ```
-core ← layouts ← renderer
+core ← layouts ← src/placement
 core ← physics ← layouts
 core ← triage
 core ← hub
+core ← vault ← hub
+src/ → hub (via API calls to :3141)
 ```
 
 No circular dependencies. Core imports nothing. Everything else imports core.
@@ -44,104 +77,33 @@ No circular dependencies. Core imports nothing. Everything else imports core.
 ### Key design decisions
 
 1. **Nodes and Edges are the universal primitives.** Everything is a graph.
-2. **Layouts are pluggable.** Adding a new organization mode = one file implementing `LayoutStrategy`.
-3. **Physics is optional per layout.** Some layouts use forces (orbit, free). Some don't (grid).
-4. **Transient state is separate from persisted state.** Physics velocities live in memory. Positions live in SQLite.
-5. **Entropy is computed, not stored.** The meter reads the graph and returns a score.
-6. **The AI layer is a downstream consumer.** It reads events and suggests. It never acts autonomously.
+2. **Unified scene graph.** Projects, folders, and files are all SceneNodes in one tree. No dual-mode state machine.
+3. **Semantic zoom.** Detail emerges as you zoom in — skip, dot, shape, children, lazy load.
+4. **Heat-driven placement.** Active files orbit near center, cold files in compressed outer belt. Score 0–100 per node.
+5. **Layouts are pluggable.** Adding a new organization mode = one file implementing `LayoutStrategy`.
+6. **Hub is sole DB writer.** All clients go through hub endpoints.
+7. **Workspace is a state flag, not a separate page.** Same canvas, camera, renderer — different render branch and input behavior.
+8. **The AI layer is a downstream consumer.** It reads events and suggests. It never acts autonomously.
 
 ---
 
-## Packages
+## Running Portal
 
-### `core/`
-The foundation. Every other package imports from here.
+The easiest way is the launcher: double-click **`portal-launcher.bat`** in the project root.
 
-| File | Purpose |
-|------|---------|
-| `types.ts` | Node, Edge, Project, Event, Snapshot, EntropyMetrics, ArtifactGroup, LaunchAction |
-| `graph.ts` | Pure functions: add/remove/link nodes, assign to projects, compute entropy, query relationships |
-| `persistence.ts` | SQLite schema (WAL mode), row ↔ domain conversion, `hydrateGraph()` |
+Or manually:
 
-### `layouts/`
-Pluggable organization strategies. Each implements the `LayoutStrategy` interface.
+```bash
+# Terminal 1: Start hub server
+npx tsx packages/hub/src/server.ts
 
-| File | Strategy | Physics? | Purpose |
-|------|----------|----------|---------|
-| `types.ts` | — | — | `LayoutStrategy` interface, `LayoutRegistry`, `LayoutBody`, `LayoutConfig` |
-| `free.ts` | Free | Yes | Manual scatter workbench. Drag and drop. Positions persist. |
-| `orbit.ts` | Orbit | Yes | Recency rings. Files pushed outward by last-used time. Core exclusion. |
-| `grid.ts` | Grid | No | Auto-arrange by type, name, or date. Static snap. |
+# Terminal 2: Start UI dev server
+npm run dev:ui
 
-**To add a new layout:**
-```typescript
-import type { LayoutStrategy } from "./types";
-
-export const myLayout: LayoutStrategy = {
-  name: "my-layout",
-  label: "My Layout",
-  usesPhysics: false,
-  computePositions(nodes, edges, config) {
-    // Return Record<NodeId, { x, y }>
-  },
-};
-
-// Then register it:
-registry.register(myLayout);
+# Then open http://localhost:5173
 ```
 
-### `physics/`
-Layout-agnostic force simulation. Layouts compose these primitives.
-
-| File | Purpose |
-|------|---------|
-| `forces.ts` | Primitive force functions: `springAttraction`, `pairRepulsion`, `coreExclusion`, `boundaryConstraint`, `springLink`, `centerGravity` |
-| `solver.ts` | Generic integrator: bodies + forces → new positions. Handles damping, velocity cap, sleep detection. |
-| `seeding.ts` | Deterministic initialization from hashes. Zero `Math.random()`. `seedSpheres`, `seedFiles`. |
-
-### `triage/`
-AI-assisted organization layer. Phase 1 is manual; Phase 2 adds AI suggestions.
-
-| File | Purpose |
-|------|---------|
-| `types.ts` | `TriageEngine` interface, `TriageSuggestion`, `LocalTriageEngine` stub |
-
-### `renderer/` (TODO — v0.2.0)
-Canvas drawing. Consumes layouts + physics, renders to HTML5 Canvas or WebGL.
-
-### `hub/` (TODO — v0.2.0)
-Fastify server + SQLite. Uses `core/persistence.ts` schema. REST API for the Tauri frontend.
-
----
-
-## Data model
-
-### Node states (entropy)
-
-```
-unassigned → assigned → organized
-                ↓
-              stale (after N days without interaction)
-```
-
-### Entropy meter
-
-```
-score = (unassigned × 1.0 + stale × 0.6 + assigned × 0.3) / total_nodes
-```
-
-Score 0 = fully organized. Score 1 = chaos. Threshold 0.3 = triage prompt.
-
-### Event stream
-
-Every user action emits an event with a `session_id` that groups related events atomically.
-
-```
-session_id: "abc-123" → project_exit(A)
-session_id: "abc-123" → snapshot_saved(A)
-session_id: "abc-123" → project_enter(B)
-session_id: "abc-123" → project_launched(B)
-```
+Hub runs on port 3141, UI on port 5173. See [COMMANDS.md](./COMMANDS.md) for full reference.
 
 ---
 
@@ -150,23 +112,44 @@ session_id: "abc-123" → project_launched(B)
 | Layer | Technology |
 |-------|-----------|
 | Language | TypeScript (strict) |
-| Desktop shell | Tauri |
-| API server | Fastify |
+| Desktop shell | Tauri v2 |
+| API server | Fastify on :3141 |
 | Database | SQLite (WAL mode) |
 | Renderer | HTML5 Canvas (→ WebGL later) |
-| Browser bridge | Chromium extension (Phase 3) |
+| Build | Vite |
+| Browser bridge | Chromium extension (future) |
 
 ---
 
-## Setup (when app scaffold exists)
+## Data model
 
-```bash
-git clone <repo>
-cd portal
-npm install
-npm run dev        # starts hub + renderer
-npm run tauri dev  # starts desktop app
+### Scene graph
+
 ```
+Root (galaxy)
+├── Project A (sphere)  ← double-click to enter workspace
+│   ├── Folder X        ← draggable in workspace
+│   │   ├── file1.ts    ← draggable card with content preview
+│   │   └── file2.md
+│   └── file3.pdf
+└── Project B (sphere)
+    └── ...
+```
+
+All SceneNodes. Lazy-loaded. World-unit coordinates. Heat score determines orbit radius within parent.
+
+### Heat tiers
+
+| Tier | Score | Behavior |
+|------|-------|----------|
+| Active | 70–100 | Near center, full opacity, large |
+| Reference | 40–69 | Mid-orbit, normal size |
+| Dormant | 15–39 | Outer belt, reduced opacity |
+| Cold | 0–14 | Compressed outer ring, small, faded |
+
+### Event stream
+
+Every user action emits an event with a `session_id` that groups related events atomically.
 
 ---
 

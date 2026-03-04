@@ -18,48 +18,70 @@
 
 ---
 
-## v0.2.0-scaffold
-**Running app shell**
+## v0.2.0-scaffold ✅ COMPLETE
+**Tauri desktop shell**
 
-- [ ] Tauri project init (`npm create tauri-app`)
-- [ ] Monorepo setup (workspaces)
-- [ ] Fastify hub server
-  - [ ] `POST /ingest` (event ingestion)
-  - [ ] `GET /projects`
-  - [ ] `POST /projects`
-  - [ ] `POST /projects/:id/launch` (writes events + returns recipe)
-  - [ ] `GET /export`
-  - [ ] `POST /sandbox/reset` (SANDBOX=1)
-- [ ] SQLite integration (run schema, WAL mode)
-- [ ] Basic renderer (Canvas, draws spheres from DB data)
-- [ ] Tauri ↔ Hub communication (localhost fetch)
-- [ ] Seed data fixture for development
+- [x] Tauri v2 project init
+- [x] Monorepo setup (workspaces)
+- [x] Vite build config
+- [x] Gold test sphere renders on Canvas
 
 ---
 
-## v0.3.0-spatial
-**Full spatial canvas**
+## v0.3.0-hub ✅ COMPLETE
+**Hub server, vault, real data**
 
-- [ ] Top-level sphere physics (orbit anchor, collision, springs)
-- [ ] Scroll-to-zoom with camera transform
-- [ ] Zoom-into-project transition
-- [ ] Free mode inside projects (drag, boundary, persist)
-- [ ] Orbit mode inside projects (recency rings, core exclusion)
-- [ ] Grid mode inside projects (auto-arrange)
-- [ ] Layout toolbar: [Free] [Orbit] [Grid] [Export] [⚙]
-- [ ] Locked/Free toggle (L key)
-- [ ] Minimap
-- [ ] Dynamic damping (global = flicky, local = grounded)
-- [ ] Chromatic salience (activity → vividness)
-- [ ] Version link edges (visual + data)
-- [ ] Staggered file entrance animation
-- [ ] Recency ring labels
-- [ ] Save/restore positions to DB on layout change
+- [x] Fastify hub server (sole DB writer, 11+ endpoints)
+- [x] SQLite integration (WAL mode)
+- [x] Vault file ingest (copy, hash, dedup, metadata)
+- [x] System logger (buffered → SQLite + file logs)
+- [x] Canvas connected to hub API
+- [x] 6 real projects ingested
+- [x] Windows launcher script
 
 ---
 
-## v0.4.0-triage
-**Entropy meter + organization**
+## v0.4.0-heat ✅ COMPLETE
+**Heat scoring engine**
+
+- [x] Heat types (tiers, weight profiles, decay config)
+- [x] Pure heat computation (weighted-sum, 0–100, O(N))
+- [x] Heat persistence (heat_metadata, heat_scores, heat_profiles tables)
+- [x] Heat drives orbit placement, visibility, compression, tiers
+- [x] Weight profiles swappable at runtime
+
+---
+
+## v0.5.0-restructure ✅ COMPLETE
+**Modular frontend + Vite pipeline**
+
+- [x] 11 TypeScript modules replace monolithic dist/main.js
+- [x] Vite build pipeline with path aliases
+- [x] Heat integration in hub (seed from mtime, cache scores, LEFT JOIN)
+- [x] Heat-driven orbit (score → radius, tier → opacity/size)
+- [x] Click-to-select model (click = select, scroll = enter/exit, double-click = instant)
+- [x] New hub endpoints (heat, pin, promote)
+
+---
+
+## v0.6.0-scene-graph ✅ COMPLETE
+**Unified scene graph + semantic zoom**
+
+- [x] SceneNode interface (projects, folders, files in one tree)
+- [x] Lazy loading (children fetched when screen-space radius > 40px)
+- [x] Semantic zoom renderer (detail thresholds: skip/dot/no-children/children/lazy-load)
+- [x] World-unit coordinate system (replaces screen-pixel)
+- [x] Continuous zoom (0.08–20x, cursor-centered, Miro-style)
+- [x] Selection ring with directional arrows
+- [x] Loading indicator (rotating dots)
+- [x] Minimap (project positions + camera viewport)
+- [x] Breadcrumb from ancestor chain (clickable)
+- [x] AppStateV2 (roots[], selectedNode, hoveredNode)
+
+---
+
+## v0.7.0-triage (NEXT)
+**Entropy meter + manual organization**
 
 - [ ] Entropy meter UI (always visible, passive)
 - [ ] Unassigned node detection
@@ -73,26 +95,19 @@
 
 ---
 
-## v0.5.0-ai-triage
+## v0.8.0-ai-triage
 **AI-assisted organization (Phase 2 AI)**
 
-- [ ] Local heuristics engine
-  - [ ] Same-extension matching
-  - [ ] Similar-name version detection
-  - [ ] Stale file archival suggestions
+- [ ] Local heuristics engine (same-extension, similar-name, stale detection)
 - [ ] Claude API integration (`POST /insights/run`)
-  - [ ] Batched event context
-  - [ ] Summarized project state
-  - [ ] Suggestion generation
 - [ ] Triage UI: arrow keys (← reject, → accept)
 - [ ] "Set aside for later" option
 - [ ] Manual override always available
 - [ ] Pattern learning from accept/reject history
-- [ ] Transition frequency analysis (A↔B → suggest merge/parent)
 
 ---
 
-## v0.6.0-bridge
+## v0.9.0-bridge
 **Browser extension (Phase 3)**
 
 - [ ] Chrome/Edge extension scaffold
@@ -105,7 +120,7 @@
 
 ---
 
-## v0.7.0-recipes
+## v0.10.0-recipes
 **Launch recipes + workspace restore**
 
 - [ ] Launch recipe editor UI
@@ -117,7 +132,7 @@
 
 ---
 
-## v0.8.0-export
+## v0.11.0-export
 **Export & sharing**
 
 - [ ] Export lens UI
